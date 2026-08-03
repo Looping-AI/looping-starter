@@ -24,6 +24,7 @@
     "test:record": "RECORD=1 vitest run recorded.spec.ts",
     "verify:isolation": "node scripts/verify-isolation.mjs",
     "link:local": "node scripts/link-local.mjs",
+    "cf": "node scripts/cf.mjs",
     "prepare": "husky"
   },
   "dependencies": {
