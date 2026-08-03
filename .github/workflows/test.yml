@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Always from the registry, never from a sibling checkout. `npm run
+      # link:local` is a development convenience, and a build that only works
+      # with it must never be able to ship.
+      - run: npm install
+
+      - run: npm run check
+      - run: npm test
+
+      # Each agent's module graph carries only the plugins that agent installs,
+      # and stays under its size ceiling. The one defence that survives a
+      # refactor: without it the subpath-export discipline in @loopingai/plugins
+      # rots silently the first time someone adds a convenience re-export.
+      - run: npm run verify:isolation
+
+      # The whole Worker builds and every binding resolves.
+      - run: npx wrangler deploy --dry-run --outdir dist

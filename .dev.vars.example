@@ -1,0 +1,27 @@
+# Copy to `.dev.vars` for local `wrangler dev`. In production set each as a
+# secret: `wrangler secret put <NAME>`.
+
+# One Ed25519 private JWK (a single line) signing every card this Worker serves
+# and every push-notification callback JWT. MUST include a `kid`. Generate with
+# `npm run keygen`.
+#
+# Only the matching PUBLIC key is ever exposed, at /.well-known/jwks.json — the
+# private half never leaves the Worker.
+#
+# One key, not one per agent: the card lives at a well-known URI, which RFC 8615
+# defines per-authority, so this origin serves one card and the gateway pins one
+# key. The agents share this Worker and this file anyway, so per-agent keys never
+# expressed a boundary that existed. What separates them is the tenant claim in
+# the gateway's token, which core checks against the tenant each request names.
+A2A_SIGNING_KEY=
+
+# GATEWAY_ORIGINS: JSON array of trusted gateway origins, e.g.
+# ["https://gateway.example.com"]. A property of this deployment, like the key.
+# Not a traditional secret, but kept out of wrangler.jsonc so it can differ per
+# environment with no code change.
+GATEWAY_ORIGINS=
+
+# ARC_API_KEY: API key for the ARC-AGI-3 game API (three.arcprize.org), issued
+# from the ARC-AGI-3 web console. Required only by the arc-player agent
+# (@loopingai/plugins/arc-agi declares it). Delete this line if you remove it.
+ARC_API_KEY=

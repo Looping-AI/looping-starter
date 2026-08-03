@@ -1,0 +1,64 @@
+{
+  "name": "looping-starter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A working, deployable Looping agent on Cloudflare Workers. Three example agents mounted in one Worker, on @loopingai/core and @loopingai/plugins.",
+  "license": "GPL-3.0-only",
+  "author": "Looping AI",
+  "homepage": "https://github.com/Looping-AI/looping-starter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Looping-AI/looping-starter.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "keygen": "looping-keys",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "check": "wrangler types --check && prettier --check . && eslint . && tsc && tsc -p test/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:record": "RECORD=1 vitest run recorded.spec.ts",
+    "verify:isolation": "node scripts/verify-isolation.mjs",
+    "link:local": "node scripts/link-local.mjs",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "^1.0.0",
+    "@cloudflare/shell": "0.4.3",
+    "@loopingai/core": "^0.2.0",
+    "@loopingai/plugins": "^0.1.1",
+    "agents": "^0.20.0",
+    "ai": "^7.0.40",
+    "drizzle-orm": "^0.45.2",
+    "jose": "^6.2.7",
+    "workers-ai-provider": "^4.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^10.8.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "undici": "7.28.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "allowScripts": {
+    "esbuild": false,
+    "fsevents": false,
+    "sharp": false,
+    "workerd": false,
+    "core-js-pure": false
+  }
+}

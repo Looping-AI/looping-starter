@@ -1,0 +1,128 @@
+/**
+ * One Worker, three agents.
+ *
+ * The agents are **tenants** of one deployment, routed by `src/index.ts` on the
+ * A2A `params.tenant` — they share one origin, one `/a2a` endpoint, one signed
+ * AgentCard, one JWKS and one signing key. What they do *not* share is what is
+ * configured below: each gets its own Durable Object class and its own Workflow
+ * binding. Blocks are grouped per agent so deleting one is a comment-out rather
+ * than a puzzle — see "Delete what you don't want" in the README for the full
+ * three-step removal.
+ *
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "looping-starter",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+
+  // --- shared: required by core itself -------------------------------------
+
+  // Workers AI backs every agent's tool loop (via AI Gateway). `remote: true`
+  // reflects reality — Workers AI has no local execution mode and always hits
+  // remote resources — and suppresses wrangler's per-run warning. In tests the
+  // pool-level `remoteBindings: false` (vitest.config.ts) overrides this and
+  // keeps the suite from eagerly opening that remote connection.
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+
+  // --- plugin-required bindings --------------------------------------------
+  // A plugin cannot add its own wrangler binding, which is the whole reason it
+  // declares `requires`. Each of these is asserted at DO start by
+  // `createAgentRuntime({ env })`, so a missing one fails with a sentence naming
+  // the plugin rather than at the first tool call, inside a request someone is
+  // waiting on.
+
+  // `@loopingai/plugins/browser` — used by reactive and arc-player.
+  // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free
+  // tier. `remote: true` is required for Quick Actions under `wrangler dev`.
+  "browser": {
+    "binding": "BROWSER",
+    "remote": true
+  },
+
+  // `@loopingai/plugins/recall` — used by reactive and proactive. Must be a
+  // 1024-dim cosine index to match the `@cf/baai/bge-m3` embedding model.
+  // Vectorize has no local mode, so tests inject a fake index.
+  //   wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=cosine
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "looping-starter-recall",
+      "remote": true
+    }
+  ],
+
+  // --- the agents ----------------------------------------------------------
+  // One Durable Object class per agent: each is keyed by the verified caller
+  // (`identity.key`), holding that caller's SQLite-backed Session — continuous
+  // history plus writable memory.
+  //
+  // `ReactiveSubagent` / `ArcPlayerSubagent` are deliberately absent. Each is a
+  // managed facet created beneath ReactiveAgent/ArcPlayerAgent, so it needs no
+  // binding and no `new_sqlite_classes` entry; it only has to be exported from
+  // src/index.ts so `ctx.exports` can resolve it by class name. They DO need a
+  // test-only binding — see the comment in vitest.config.ts.
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "ReactiveAgent", "name": "ReactiveAgent" },
+      { "class_name": "ProactiveAgent", "name": "ProactiveAgent" },
+      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ReactiveAgent",
+        "ProactiveAgent",
+        "ArcPlayerAgent"
+      ]
+    }
+  ],
+
+  // Async A2A (accept + notify): the Worker accepts a turn synchronously and
+  // hands generation plus the gateway push-notification callback to a durable
+  // Workflow. Reactive and arc-player run the same round loop over different
+  // souls and plugins, so they share one workflow body behind two entrypoints.
+  "workflows": [
+    {
+      "binding": "HANDLE_TASK_WORKFLOW",
+      "name": "handle-task",
+      "class_name": "HandleTaskWorkflow"
+    },
+    {
+      "binding": "ARC_HANDLE_TASK_WORKFLOW",
+      "name": "arc-handle-task",
+      "class_name": "ArcHandleTaskWorkflow"
+    },
+    {
+      "binding": "NOTIFY_WORKFLOW",
+      "name": "notify-task",
+      "class_name": "NotifyTaskWorkflow"
+    }
+  ],
+
+  // --- secrets --------------------------------------------------------------
+  // One signing key for the deployment, not one per agent. The card is
+  // per-origin (a well-known URI is per-authority), so the key a gateway pins is
+  // too. Nothing was lost by collapsing three into one: the agents share this
+  // Worker and this `env`, so each could always read the others' keys — separate
+  // ones never expressed a boundary that existed. Generate with `npm run keygen`.
+  //
+  // What does separate them is the gateway token's tenant claim, which core
+  // checks against the tenant each request addresses.
+  //
+  // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
+  // from — a property of the deployment, like the key.
+  "secrets": {
+    "required": ["A2A_SIGNING_KEY", "GATEWAY_ORIGINS", "ARC_API_KEY"]
+  }
+}
