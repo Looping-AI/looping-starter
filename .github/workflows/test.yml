@@ -24,7 +24,7 @@ jobs:
       # Always from the registry, never from a sibling checkout. `npm run
       # link:local` is a development convenience, and a build that only works
       # with it must never be able to ship.
-      - run: npm install
+      - run: npm ci
 
       - run: npm run check
       - run: npm test

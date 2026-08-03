@@ -21,10 +21,16 @@ rest. Adding or removing a capability is a single line.
 npm install
 npm run keygen          # one key for the deployment — see .dev.vars.example
 npx wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=cosine
+```
+
+Put the key and `GATEWAY_ORIGINS` in `.dev.vars` before starting — the Worker reads both
+on its first request ([`.dev.vars.example`](.dev.vars.example) lists all three secrets):
+
+```bash
 npm run dev
 ```
 
-Then set your secrets (`.dev.vars` locally, `wrangler secret put` deployed) and:
+To ship, set the same secrets with `wrangler secret put` and:
 
 ```bash
 npm run deploy
@@ -38,6 +44,9 @@ Register each agent with your gateway using the **same endpoint** and its own
 | `https://<your-worker>/a2a` | `reactive`   |
 | `https://<your-worker>/a2a` | `proactive`  |
 | `https://<your-worker>/a2a` | `arc-player` |
+
+`/a2a` is core's default, not a requirement — see [Where the endpoints
+live](#where-the-endpoints-live). Register whatever path this deployment actually serves.
 
 > **Browser Rendering needs a paid Workers plan.** On the free tier, remove `browser()`
 > from the agents' `plugins.ts` and the `browser` binding from `wrangler.jsonc`.
@@ -72,6 +81,30 @@ single A2A endpoint"_ — and §8.3.2 requires a client to send the value the in
 selected declared. A tenant is required on every request: there is no default agent and no
 implicit routing.
 
+### Where the endpoints live
+
+Only the **first** of those three paths is fixed, for the reason the next section gives:
+it is a well-known URI, so core matches it by suffix and you cannot move it. The other two
+are defaults, and both are options on `createA2AWorker`:
+
+```ts
+createA2AWorker<Env>({
+  manifest: hostManifest,
+  tenants: { … },
+  rpcPath: "/rpc",                     // default "/a2a"
+  jwksPath: "/.well-known/keys.json"   // default "/.well-known/jwks.json"
+});
+```
+
+Nothing else has to be told. The cards' `supportedInterfaces[0].url` is built as
+`${origin}${rpcPath}`, each card's `jku` points at `jwksPath`, and the gateway-token
+`audience` defaults to that same `${origin}${rpcPath}` — so the path served, the path
+advertised, and the audience tokens must be minted for stay in step by construction.
+
+What does _not_ follow automatically is the **gateway's registration**, which has to name
+the endpoint this deployment actually serves: that URL is the `aud` its tokens carry. Change
+`rpcPath` on an already-registered agent and every request 401s until it is re-registered.
+
 ### Why not a path prefix per agent
 
 That is what this repo did first, and it cannot work. The AgentCard lives at a **well-known
@@ -86,7 +119,7 @@ its name, skills and signature — comes from `GetExtendedAgentCard`, the spec's
 tenant-aware card method:
 
 ```jsonc
-// POST /a2a
+// POST /a2a  (whatever `rpcPath` serves)
 {
   "jsonrpc": "2.0",
   "id": 1,
@@ -110,9 +143,13 @@ all three share an audience. Without it `tenant` would be an unauthenticated fie
 request body, and a token minted for one agent would work against any sibling.
 
 > **This needs a gateway that mints the tenant claim and registers agents with a tenant id**
-> ([looping-gateway#62](https://github.com/Looping-AI/looping-gateway/pull/62)). The two
-> sides do not interoperate across that change in either direction, so they deploy together
-> and registered agents are re-registered.
+> ([looping-gateway#62](https://github.com/Looping-AI/looping-gateway/pull/62)), on the
+> `loopingai.org` claim namespace
+> ([#68](https://github.com/Looping-AI/looping-gateway/pull/68)). Both are required: a
+> gateway with the first but not the second mints `https://looping.ai/tenant`, core reads
+> `https://loopingai.org/tenant`, and every request 401s on the empty-tenant comparison. The
+> two sides do not interoperate across either change in either direction, so they deploy
+> together and registered agents are re-registered.
 
 ---
 
@@ -215,10 +252,12 @@ and esbuild's **metafile** — the exact list of modules in the graph, not a str
 is checked for plugins that agent does not install:
 
 ```
-✓ reactive:   4091 KiB (ceiling 4395 KiB), 468 modules, no cross-agent plugin
-✓ proactive:  2555 KiB (ceiling 2832 KiB), 452 modules, no cross-agent plugin
-✓ arc-player: 2987 KiB (ceiling 3223 KiB), 466 modules, no cross-agent plugin
+✓ reactive: 4090 KiB (ceiling 4395 KiB), 468 modules, no cross-agent plugin
+✓ proactive: 2555 KiB (ceiling 2832 KiB), 452 modules, no cross-agent plugin
+✓ arc-player: 2986 KiB (ceiling 3223 KiB), 466 modules, no cross-agent plugin
 ```
+
+(Sizes move with every dependency bump; the ceilings are what CI enforces.)
 
 It earns its keep: it caught a real leak during this repo's own construction, when the
 shared base class still lived in `agents/reactive/` and arc-player extending it dragged
@@ -240,6 +279,13 @@ registry.
 
 Nothing is written to `package.json`, so a plain `npm install` — and CI, which never runs
 this — always builds against the real packages.
+
+> **Check `package-lock.json` before you commit after running this.** `--no-save` protects
+> the manifest, not the lockfile: a later `npm` invocation can regenerate it from the linked
+> tree and pin both packages to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
+> exist on a CI runner — or on your machine once the temp dir is cleaned. If you see `file:`
+> next to a `@loopingai/*` entry, regenerate from the registry with
+> `rm -rf node_modules package-lock.json && npm install`.
 
 ---
 
