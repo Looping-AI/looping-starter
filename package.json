@@ -31,7 +31,7 @@
     "@a2a-js/sdk": "^1.0.0",
     "@cloudflare/shell": "0.4.3",
     "@loopingai/core": "^0.3.1",
-    "@loopingai/plugins": "^0.2.0",
+    "@loopingai/plugins": "^0.2.1",
     "agents": "^0.20.0",
     "ai": "^7.0.40",
     "drizzle-orm": "^0.45.2",
@@ -42,7 +42,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^26.1.1",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
     "husky": "^9.1.7",
     "prettier": "^3.9.6",
