@@ -265,6 +265,38 @@ shared base class still lived in `agents/reactive/` and arc-player extending it 
 
 ---
 
+## Looking at a running deployment
+
+```bash
+cp .cf.env.example .cf.env    # an account-scoped API token + your account id
+npm run cf -- logs --since 2h --level error
+npm run cf -- wf handle-task
+npm run cf -- ai --since 2h
+```
+
+[`scripts/cf.mjs`](scripts/cf.mjs) is a small Cloudflare API proxy for the three questions
+a deploy actually raises: what did it log, did the workflow finish its steps, and what did
+the model get asked. Each subcommand prints a digest rather than the raw envelope — `logs`
+a level-tallied timeline, `wf <name> <instance>` per-step pass/fail, `ai <logId>` the
+prompt and reply as text — with `--json` or `--raw` when you want the body. This Worker's
+workflows are `handle-task`, `arc-handle-task` and `notify-task`.
+
+The credentials go in `.cf.env`, not `.dev.vars`, because they are not bindings: they
+authenticate **you** to the Cloudflare API, not the Worker to anything. Keeping them in
+their own file also keeps the token off wrangler's dotenv path, so it is never loaded into
+the Worker's env or uploaded as a secret. The script reads the file itself and holds the
+token in memory — it never becomes an argv, so it stays out of your shell history and out
+of an agent's context, and it is redacted from the output as a safety net.
+
+Anything the subcommands don't cover falls through to a raw request:
+
+```bash
+npm run cf -- GET workflows -q per_page=50
+npm run cf -- help
+```
+
+---
+
 ## Local development across the three repos
 
 ```bash
