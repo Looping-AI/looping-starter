@@ -1,18 +1,23 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@loopingai/core";
+import { runHandleTask, type HandleTaskParams } from "@loopingai/core/round";
 import { REACTIVE_CONFIG } from "@/config";
-import { runHandleTask, type HandleTaskParams } from "@/round-agent/workflow";
-import { getAgent } from "./agent";
+import { roundPolicy } from "@/round-policy";
+import { reactive } from "./definition";
 
 /**
  * The reactive agent's task workflow.
  *
- * A thin entrypoint over the shared `runHandleTask` rather than a copy of it. Two
+ * A thin entrypoint over core's `runHandleTask` rather than a copy of it. Two
  * classes exist (this and `ArcHandleTaskWorkflow`) because a wrangler workflow
  * binding names exactly one class and each agent's instances must be its own; the
- * round loop, wave scheduling and delivery underneath are identical and stay in
- * one file.
+ * round loop, wave scheduling and delivery underneath are core's.
+ *
+ * `reactive.resolveAgent` is the same declaration `src/index.ts` mounts the tenant
+ * with, so the workflow and the tenant can never address different Durable
+ * Objects — the failure that used to type-check perfectly and surface as a task
+ * that never called back.
  */
 export class HandleTaskWorkflow extends WorkflowEntrypoint<
   Env,
@@ -23,8 +28,10 @@ export class HandleTaskWorkflow extends WorkflowEntrypoint<
     step: WorkflowStep
   ): Promise<void> {
     await runHandleTask(event.payload, step, {
-      resolveAgent: getAgent,
-      config: resolveConfig(REACTIVE_CONFIG)
+      resolveAgent: (identity) => reactive.resolveAgent(this.env, identity),
+      config: resolveConfig(REACTIVE_CONFIG),
+      policy: roundPolicy,
+      signingKey: this.env.A2A_SIGNING_KEY
     });
   }
 }

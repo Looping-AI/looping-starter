@@ -3,7 +3,7 @@ import { browser } from "@loopingai/plugins/browser";
 import { recall } from "@loopingai/plugins/recall";
 import { workspace } from "@loopingai/plugins/workspace";
 import { RECALL } from "@/config";
-import type { PluginHost } from "@/plugin-host";
+import type { PluginHost } from "@loopingai/core/host";
 import { general } from "./general";
 
 /**
@@ -19,13 +19,10 @@ import { general } from "./general";
  * one: a single list would put every plugin in every agent.
  */
 
-export const plugins = (host: PluginHost): AgentPlugin[] => [
+export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
   // The catch-all, first: order here is the order the delegating model is shown
   // the types, and it should read the general case before the specialized ones.
-  general({
-    primaryModelId: host.primaryModelId,
-    fallbackModelId: host.fallbackModelId
-  }),
+  general(),
 
   // Read web pages. Requires the `BROWSER` binding and a paid Workers plan.
   browser({ binding: host.env.BROWSER }),
@@ -43,9 +40,10 @@ export const plugins = (host: PluginHost): AgentPlugin[] => [
     ai: host.env.AI,
     index: host.env.VECTORIZE,
     namespace: host.callerKey,
-    aiGatewayId: "default",
-    embeddingModelId: RECALL.embeddingModelId,
-    topK: RECALL.topK,
-    metadataTextMax: RECALL.metadataTextMax
+    // The host's *resolved* gateway id, so embedding calls are correlated with
+    // chat calls. Spread the rest: enumerating each field silently drops any
+    // option the plugin adds later.
+    aiGatewayId: host.aiGatewayId,
+    ...RECALL
   })
 ];

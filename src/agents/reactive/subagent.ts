@@ -1,7 +1,7 @@
 import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import { StarterSubagentBase } from "@/round-agent/subagent";
+import type { PluginHost } from "@loopingai/core/host";
+import { RecipeSubagentHost } from "@loopingai/core/round";
 import { REACTIVE_CONFIG } from "@/config";
-import type { PluginHost } from "@/plugin-host";
 import { plugins } from "./plugins";
 
 /**
@@ -10,14 +10,14 @@ import { plugins } from "./plugins";
  * Named, exported, and trivial by design: the framework resolves a facet by
  * `this.constructor.name`, and the only thing that distinguishes one agent's
  * children from another's is which plugins they can reach. Everything else is
- * `StarterSubagentBase`.
+ * `RecipeSubagentHost`.
  */
-export class ReactiveSubagent extends StarterSubagentBase {
+export class ReactiveSubagent extends RecipeSubagentHost<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return REACTIVE_CONFIG;
   }
 
-  protected agentPlugins(host: PluginHost): AgentPlugin[] {
+  protected agentPlugins(host: PluginHost<Env>): AgentPlugin[] {
     return plugins(host);
   }
 }

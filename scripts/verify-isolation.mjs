@@ -30,6 +30,8 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const plugin = (name) => `@loopingai/plugins/dist/${name}/`;
+/** A core subpath. `/round` is the delegation engine — opt-in, and its own graph. */
+const core = (name) => `@loopingai/core/dist/${name}/`;
 
 /**
  * One agent, its entry points, and what must not be in its graph.
@@ -47,7 +49,7 @@ const AGENTS = [
       "src/agents/reactive/subagent.ts"
     ],
     forbidden: [plugin("arc-agi"), plugin("triage")],
-    maxBytes: 4_500_000
+    maxBytes: 3_700_000
   },
   {
     name: "proactive",
@@ -58,8 +60,19 @@ const AGENTS = [
     // Also no `/workspace`: this agent never delegates, so no execution ever
     // needs a durable file store — and `@cloudflare/shell` is a real dependency
     // to carry for nothing.
-    forbidden: [plugin("arc-agi"), plugin("workspace"), "@cloudflare/shell"],
-    maxBytes: 2_900_000
+    //
+    // And no `@loopingai/core/round`. That is the strongest assertion here: core
+    // ships the whole delegating loop — DAG scheduler, chunked subagent
+    // execution, the repair ladder — behind an opt-in subpath, and an agent that
+    // answers in one turn must not pay a byte for it. If this ever fails, the
+    // root barrel has started re-exporting `/round`.
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("workspace"),
+      "@cloudflare/shell",
+      core("round")
+    ],
+    maxBytes: 1_750_000
   },
   {
     name: "arc-player",

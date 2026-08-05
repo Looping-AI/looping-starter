@@ -1,7 +1,7 @@
 import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import { StarterSubagentBase } from "@/round-agent/subagent";
+import type { PluginHost } from "@loopingai/core/host";
+import { RecipeSubagentHost } from "@loopingai/core/round";
 import { ARC_PLAYER_CONFIG } from "@/config";
-import type { PluginHost } from "@/plugin-host";
 import { plugins } from "./plugins";
 
 /**
@@ -12,12 +12,12 @@ import { plugins } from "./plugins";
  * resolves a facet by `this.constructor.name`, so this must stay a named, exported
  * class (and the bundler must keep class names — see `scripts/verify-isolation.mjs`).
  */
-export class ArcPlayerSubagent extends StarterSubagentBase {
+export class ArcPlayerSubagent extends RecipeSubagentHost<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return ARC_PLAYER_CONFIG;
   }
 
-  protected agentPlugins(host: PluginHost): AgentPlugin[] {
+  protected agentPlugins(host: PluginHost<Env>): AgentPlugin[] {
     return plugins(host);
   }
 }

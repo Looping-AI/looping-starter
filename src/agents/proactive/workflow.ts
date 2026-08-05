@@ -1,16 +1,14 @@
-import { WorkflowEntrypoint, env } from "cloudflare:workers";
+import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { TaskState } from "@a2a-js/sdk";
 import {
   buildCompletedTask,
   buildFailedTask,
   buildNoReplyCompletedTask,
-  parsePrivateJwk,
-  postNotification,
-  signCallbackJwt,
+  createPushChannel,
   type GatewayIdentity
 } from "@loopingai/core/a2a";
-import { getAgent } from "./agent";
+import type { ProactiveAgent } from "./agent";
+import { proactive } from "./definition";
 
 /**
  * The proactive agent's async task controller.
@@ -45,6 +43,25 @@ export interface NotifyTaskParams {
   jku: string;
 }
 
+/**
+ * What distinguishes one use of this controller from another — the same shape
+ * `HandleTaskDeps` gives the round agents, for the same two reasons: a spec can
+ * drive the orchestration against a fake stub, and a second agent could reuse the
+ * body with a different resolver.
+ *
+ * Routing used to be a hardcoded `getAgent(p.identity)` here, which made the two
+ * cancellation checks below untestable — a spec could not put the DO into the
+ * states they exist to catch.
+ */
+export interface NotifyTaskDeps {
+  /** Route to the agent DO for the verified caller. */
+  resolveAgent: (
+    identity: GatewayIdentity
+  ) => DurableObjectStub<ProactiveAgent>;
+  /** The deployment's Ed25519 private JWK, for the terminal callback. */
+  signingKey: string;
+}
+
 export class NotifyTaskWorkflow extends WorkflowEntrypoint<
   Env,
   NotifyTaskParams
@@ -53,7 +70,10 @@ export class NotifyTaskWorkflow extends WorkflowEntrypoint<
     event: Readonly<WorkflowEvent<NotifyTaskParams>>,
     step: WorkflowStep
   ): Promise<void> {
-    await runNotifyTask(event.payload, step);
+    await runNotifyTask(event.payload, step, {
+      resolveAgent: (identity) => proactive.resolveAgent(this.env, identity),
+      signingKey: this.env.A2A_SIGNING_KEY
+    });
   }
 }
 
@@ -66,13 +86,19 @@ export class NotifyTaskWorkflow extends WorkflowEntrypoint<
  */
 export async function runNotifyTask(
   p: NotifyTaskParams,
-  step: WorkflowStep
+  step: WorkflowStep,
+  deps: NotifyTaskDeps
 ): Promise<void> {
-  const stub = getAgent(p.identity);
+  const stub = deps.resolveAgent(p.identity);
 
-  await step.do("working", async () => {
-    await stub.markWorking(p.taskId);
-  });
+  // A Task canceled before this workflow got going stops here, before a single
+  // model call is billed. `markWorking` reports the cancellation itself rather
+  // than being probed for it, so there is no window between asking and acting.
+  const started = await step.do(
+    "working",
+    async () => (await stub.markWorking(p.taskId)) === "ok"
+  );
+  if (!started) return;
 
   // Generate the reply. Durable + retried; `converse` never rejects for a turn
   // failure — it reports one as `failed` — so a throw here is a genuine RPC
@@ -106,29 +132,32 @@ export async function runNotifyTask(
         : buildCompletedTask(p.taskId, p.contextId, outcome.text);
 
   // Persist the terminal task, unless the caller canceled it meanwhile.
-  const canceled = await step.do("complete", async () => {
-    const current = await stub.getTask(p.taskId);
-    if (current?.status.state === TaskState.TASK_STATE_CANCELED) return true;
-    await stub.saveTask(task);
-    return false;
-  });
-  if (canceled) return;
+  //
+  // **The guarded write is the cancellation check.** `saveTask` refuses to write a
+  // terminal state over a `canceled` row and says so, doing that read and write in
+  // one synchronous pass inside the DO. Probing with `getTask` first and saving
+  // second would leave a window — between the two calls, and again between this
+  // step and `notify` — in which a `CancelTask` lands and the gateway still
+  // receives a `completed` callback. Keying the notify on "did the write apply"
+  // closes it.
+  const saved = await step.do("complete", async () => stub.saveTask(task));
+  if (!saved) return;
 
   // Notify the gateway: a card-key-signed callback POST. Retried by the step on a
   // non-2xx; the gateway is idempotent/single-use, so retries are safe. If it
   // ultimately fails, the gateway's own reaction backstop clears the pending
   // marker.
   //
-  // Signed with *this agent's* key: three agents share this Worker, and the
-  // gateway verifies each callback against the card it registered for that agent.
+  // Signed with the deployment's key. There is one: the card sits at a
+  // well-known URI, which RFC 8615 defines per-authority, so this origin
+  // publishes one card and the gateway pins one key for every agent on it.
   await step.do("notify", async () => {
-    const jwt = await signCallbackJwt(parsePrivateJwk(env.A2A_SIGNING_KEY), {
-      jku: p.jku,
-      aud: p.pushUrl
-    });
-    const res = await postNotification(p.pushUrl, p.pushToken, jwt, task);
-    if (!res.ok) {
-      throw new Error(`gateway notification failed: HTTP ${res.status}`);
-    }
+    await createPushChannel(deps.signingKey, {
+      taskId: p.taskId,
+      contextId: p.contextId,
+      pushUrl: p.pushUrl,
+      pushToken: p.pushToken,
+      jku: p.jku
+    }).deliver(task);
   });
 }

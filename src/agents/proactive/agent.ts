@@ -1,195 +1,51 @@
-import { Agent, type Schedule } from "agents";
-import { env } from "cloudflare:workers";
-import type { Task } from "@a2a-js/sdk";
-import {
-  createAgentRuntime,
-  resolveConfig,
-  type AgentRuntime,
-  type CoreConfig
-} from "@loopingai/core";
-import {
-  parsePrivateJwk,
-  buildWorkingTask,
-  postNotification,
-  signCallbackJwt,
-  type GatewayIdentity,
-  type PlainTask,
-  type TaskListQuery
-} from "@loopingai/core/a2a";
-import { AgentDB } from "@loopingai/core/db";
-import {
-  buildAgentSession,
-  createModelRuntime,
-  sessionMessage,
-  type ModelPair,
-  type ModelRuntime,
-  type SessionLike
-} from "@loopingai/core/agent";
+import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
+import type { GatewayIdentity, TurnPushContext } from "@loopingai/core/a2a";
+import { LoopingAgent, type PluginHost } from "@loopingai/core/host";
+import { sessionMessage } from "@loopingai/core/agent";
 import { noReplyTool, NO_REPLY_TOOL_NAME } from "@loopingai/plugins/triage";
 import { MAX_STEPS, PROACTIVE_CONFIG } from "@/config";
-import { callerContext } from "@/caller-context";
 import { soulPrompt } from "./soul";
 import { plugins } from "./plugins";
 import { runTurn, type TurnOutcome } from "./loop";
-
-/**
- * Everything the DO needs to stream intermediate `working` push notifications
- * live during a turn. RPC-serializable (crosses the workflow → DO boundary).
- */
-export interface TurnPushContext {
-  taskId: string;
-  contextId: string;
-  /** Gateway push-notification webhook (also the callback JWT `aud`). */
-  pushUrl: string;
-  /** Per-task validation token the gateway set; echoed in the callback header. */
-  pushToken: string;
-  /** This agent's card-signing JWKS URL — the callback JWT `jku` (pinned key). */
-  jku: string;
-}
 
 /** User-facing text when a turn fails for an unexpected (non-transient) reason. */
 const UNEXPECTED_REPLY =
   "Sorry — something went wrong while I was working on that.";
 
-/** This agent's model pair, resolved over core's defaults. */
-function resolvedModelIds(): {
-  primaryModelId: string;
-  fallbackModelId: string;
-} {
-  const { model } = resolveConfig(PROACTIVE_CONFIG);
-  return {
-    primaryModelId: model.chatModelId,
-    fallbackModelId: model.fallbackChatModelId
-  };
-}
-
 /**
- * The proactive agent as a Durable Object: one instance per calling gateway-agent
- * (keyed by the verified JWT `identity.key`), each owning **one continuous
- * Session** — durable history plus a self-edited `memory` block, backed by
- * `this.sql`.
+ * The proactive agent: sees every message, decides whether each one is for it,
+ * answers in a single turn.
  *
  * ## Why this file matters more than its size suggests
  *
- * It is the **second consumer**. Everything it shares with `../reactive/agent.ts`
- * — the runtime built in `onStart`, `AgentDB` over plugin stores, the session with
- * its displacement fan-out, the model pair — is shared because two genuinely
- * different agents both needed it, not because one agent happened to be written
- * that way. Everything it does *not* share is the evidence that core stopped at
- * the right place: no Workflow, no subagent facet, no delegation, no round
- * budget, and a turn that is allowed to end in silence.
+ * It is the **second consumer**, and the evidence that core stopped at the right
+ * place. Everything it shares with the round agents — the runtime built once per
+ * instance, `AgentDB` over plugin stores, the session with its displacement
+ * fan-out, the model pair, the task lifecycle — is `LoopingAgent`, and it is
+ * shared because two genuinely different agents both needed it, not because one
+ * happened to be written that way.
+ *
+ * Everything it does *not* share is the evidence: no `@loopingai/core/round` at
+ * all. No Workflow round loop, no subagent facet, no delegation, no round budget,
+ * and a turn that is allowed to end in silence. `npm run verify:isolation` asserts
+ * that absence on the built module graph — this agent's bundle must not contain
+ * core's delegation engine.
  *
  * The outer Worker reaches this DO with a single native Cloudflare RPC call —
  * `stub.converse(...)` — not HTTP: the DO is a private implementation detail of
  * the Worker, never exposed over the network.
  */
-export class ProactiveAgent extends Agent<Env> {
-  private session?: SessionLike;
-  private _runtime?: AgentRuntime;
-  private _models?: ModelRuntime;
-  private _pair?: ModelPair;
-  private _db?: AgentDB;
-  private identityKey?: string;
-
-  /** Test-only model injection. A field, so it never reaches the RPC stub. */
-  modelsOverride?: ModelPair;
-
-  /**
-   * Everything that would otherwise be a module-level constant, resolved once per
-   * DO instance from this agent's config and its installed plugins.
-   */
-  private get runtime(): AgentRuntime {
-    return (this._runtime ??= createAgentRuntime({
-      config: PROACTIVE_CONFIG,
-      plugins: plugins({
-        env: this.env,
-        storage: this.ctx.storage,
-        callerKey: () => this.requireIdentityKey(),
-        // Inert for this agent: it declares no recipes, because it never
-        // delegates. Passed anyway so `PluginHost` stays one shape across all
-        // three agents rather than three near-identical ones.
-        ...resolvedModelIds()
-      }),
-      env: this.env
-    }));
+export class ProactiveAgent extends LoopingAgent<Env> {
+  protected agentConfig(): CoreConfigOverrides {
+    return PROACTIVE_CONFIG;
   }
 
-  private get config(): CoreConfig {
-    return this.runtime.config;
+  protected agentPlugins(host: PluginHost<Env>): AgentPlugin[] {
+    return plugins(host);
   }
 
-  /** The agent's database (drizzle + migrations), built once per DO instance. */
-  private get db(): AgentDB {
-    return (this._db ??= new AgentDB(this.ctx.storage, {
-      maxSubtasks: this.config.maxSubtasks,
-      stores: this.runtime.stores
-    }));
-  }
-
-  private get models(): ModelRuntime {
-    return (this._models ??= createModelRuntime({
-      ai: this.env.AI,
-      config: this.config.model
-    }));
-  }
-
-  async onStart(): Promise<void> {
-    // Await migrations before the SDK dispatches any RPC — eliminates the race
-    // between schema creation and first query on cold start / hibernation wake-up.
-    await this.db.ensureReady();
-    // Register the weekly cleanup cron once per DO instance (idempotent guard).
-    const existing = await this.listSchedules({ type: "cron" });
-    if (!existing.some((s) => s.callback === "cleanupOldTasks")) {
-      await this.schedule("0 1 * * 0", "cleanupOldTasks", {});
-    }
-  }
-
-  /** Cron handler: delete notify_tasks rows older than 30 days. Sunday 01:00 UTC. */
-  async cleanupOldTasks(
-    _payload: Record<string, never>,
-    _schedule: Schedule
-  ): Promise<void> {
-    this.db.tasks.cleanup();
-  }
-
-  private modelPair(): ModelPair {
-    if (this.modelsOverride) return this.modelsOverride;
-    return (this._pair ??= this.models.createModelPair());
-  }
-
-  /** The caller key, present on every path that can reach a plugin. */
-  private requireIdentityKey(): string {
-    if (!this.identityKey) {
-      throw new Error("identity.key is required for per-caller isolation");
-    }
-    return this.identityKey;
-  }
-
-  /**
-   * The one continuous Session for this caller (rebuilt from `this.sql` after
-   * eviction). Memoized — `identity` is constant for the DO's life.
-   *
-   * The `onMessagesDisplaced` wiring is identical to the reactive agent's, and
-   * that is the point: core performs the compaction, so core announces the loss,
-   * and every plugin that asked to hear about it does. Neither agent knows that
-   * `/recall` is what listens.
-   */
-  getSession(identity: GatewayIdentity): SessionLike {
-    this.identityKey ??= identity.key ?? undefined;
-    const { session, model } = this.config;
-    return (this.session ??= buildAgentSession(
-      this,
-      this.modelPair().primary(),
-      {
-        soul: () => soulPrompt(this.runtime.renderCapabilities()),
-        memoryDescription: session.memoryDescription,
-        memoryMaxTokens: session.memoryMaxTokens,
-        compactAfterTokens: session.compactAfterTokens,
-        compactTailTokens: session.compactTailTokens,
-        maxOutputTokens: model.maxOutputTokens,
-        onMessagesDisplaced: this.runtime.onMessagesDisplaced
-      }
-    ));
+  protected agentSoul(capabilities: string): string {
+    return soulPrompt(capabilities);
   }
 
   /**
@@ -209,12 +65,10 @@ export class ProactiveAgent extends Agent<Env> {
    * then conclude there is nothing worth adding. The gate judges the message; the
    * tool judges what looking into it turned up.
    *
-   * The union is returned whole rather than collapsed to a scalar. The constraint
-   * that used to force a collapse is narrower than it looks: DO RPC intersects
-   * every *object* return with `Disposable`, whose symbol key fails the
-   * `Rpc.Serializable` bound — but that bound applies to what a `step.do(...)`
-   * **returns**, not to what an RPC hands back inside one. The workflow projects
-   * this union onto a fresh object literal within its step.
+   * The union is returned whole rather than collapsed to a scalar: DO RPC
+   * intersects every *object* return with `Disposable`, but that bound applies to
+   * what a `step.do(...)` **returns**, not to what an RPC hands back inside one.
+   * The workflow projects this union onto a fresh object literal within its step.
    *
    * `runTurn` never throws — it reports failure as `failed` rather than rejecting
    * — so this rejects only on a genuine RPC/transport fault.
@@ -227,11 +81,9 @@ export class ProactiveAgent extends Agent<Env> {
     const session = this.getSession(identity);
 
     // Append **before** the gate, so a message the agent declines is still read
-    // into history: it follows the channel whether or not it speaks, and the next
-    // message's gate needs this one for context. The gate then judges a history
-    // that already includes the message being judged — which is what makes an
-    // otherwise unclassifiable turn ("yes", "thanks", "and the second one?")
-    // classifiable at all.
+    // into history. The gate then judges a history that already includes the
+    // message being judged — which is what makes an otherwise unclassifiable turn
+    // ("yes", "thanks", "and the second one?") classifiable at all.
     await session.appendMessage(sessionMessage("user", text));
     const history = await session.getHistory();
 
@@ -242,7 +94,7 @@ export class ProactiveAgent extends Agent<Env> {
     return runTurn({
       session,
       history,
-      systemSuffix: callerContext(identity),
+      systemSuffix: this.callerContext(identity),
       tools: {
         ...(await this.runtime.mainAgentTools({ session })),
         // The late decline. Contributed here rather than by the plugin's
@@ -254,109 +106,9 @@ export class ProactiveAgent extends Agent<Env> {
       models: this.modelPair(),
       maxSteps: MAX_STEPS,
       unexpectedReply: UNEXPECTED_REPLY,
-      onContent: push ? this.streamWorking(push) : undefined
+      // This agent runs exactly one turn per task, so the bare step index is a
+      // safe notification key. An agent with rounds must include the round.
+      onContent: push ? this.push(push).stream(String) : undefined
     });
   }
-
-  /**
-   * Build the intermediate-content sink for a turn: sign the callback JWT once
-   * (lazily, reused across every progress message; 5m TTL), then POST each content
-   * message as a `working` Task snapshot. Best-effort — every failure is logged
-   * and swallowed so streaming never aborts generation or the turn.
-   *
-   * The key is the bare step index because this agent runs exactly one turn per
-   * task; an agent with rounds must key on both (see `buildWorkingTask`).
-   */
-  private streamWorking(
-    push: TurnPushContext
-  ): (text: string, stepIndex: number) => Promise<void> {
-    let jwt: string | undefined;
-    return async (text: string, stepIndex: number) => {
-      try {
-        jwt ??= await signCallbackJwt(
-          parsePrivateJwk(this.env.A2A_SIGNING_KEY),
-          { jku: push.jku, aud: push.pushUrl }
-        );
-        const task = buildWorkingTask(
-          push.taskId,
-          push.contextId,
-          text,
-          String(stepIndex)
-        );
-        const res = await postNotification(
-          push.pushUrl,
-          push.pushToken,
-          jwt,
-          task
-        );
-        if (!res.ok) {
-          console.warn("[proactive-agent] working notification non-2xx", {
-            taskId: push.taskId,
-            stepIndex,
-            status: res.status
-          });
-        }
-      } catch (err) {
-        console.warn("[proactive-agent] working notification failed", {
-          taskId: push.taskId,
-          stepIndex,
-          err: String(err)
-        });
-      }
-    };
-  }
-
-  // --- Async task state (accept + notify) ---------------------------------
-  //
-  // Thin RPC surface delegating to AgentDB's `tasks` table. Native RPC methods —
-  // the DO is never a network-reachable server. The workflow, which cannot touch
-  // this SQLite directly, calls these via DO RPC.
-
-  async beginTask(input: {
-    messageId: string;
-    taskId: string;
-    contextId: string;
-  }): Promise<PlainTask> {
-    return this.db.tasks.begin(input);
-  }
-
-  async getTask(taskId: string): Promise<PlainTask | null> {
-    return this.db.tasks.get(taskId);
-  }
-
-  async listTasks(
-    query: TaskListQuery
-  ): Promise<{ tasks: PlainTask[]; totalSize: number }> {
-    return this.db.tasks.list(query);
-  }
-
-  async saveTask(task: Task): Promise<boolean> {
-    return this.db.tasks.save(task);
-  }
-
-  async markWorking(taskId: string): Promise<void> {
-    this.db.tasks.markWorking(taskId);
-  }
-
-  async cancelTask(taskId: string): Promise<PlainTask | null> {
-    return this.db.tasks.cancel(taskId);
-  }
-}
-
-/** The resolved config, for callers outside the DO (the workflow). */
-export const proactiveConfig = (): CoreConfig =>
-  resolveConfig(PROACTIVE_CONFIG);
-
-/**
- * Resolve the per-caller agent DO stub, keyed by the verified `identity.key`.
- * Pure routing — the DO's methods are honestly typed now that its `Task` returns
- * are `PlainTask`, so callers reach the agent directly with no cast.
- */
-export function getAgent(
-  identity: GatewayIdentity
-): DurableObjectStub<ProactiveAgent> {
-  if (!identity.key) {
-    throw new Error("identity.key is required to route to the agent DO");
-  }
-  return env.ProactiveAgent.get(env.ProactiveAgent.idFromName(identity.key));
 }

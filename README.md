@@ -5,8 +5,13 @@
 Zero-trust A2A, durable task lifecycle, delegation to isolated subagents, episodic
 memory. Clone it, generate keys, deploy.
 
-It ships **three example agents in one Worker** — grow the one you want, `rm -rf` the
-rest. Adding or removing a capability is a single line.
+It ships **three example agents in one Worker** — grow the one you want, and
+`npm run agent:remove` the rest. Adding or removing a capability is a single line.
+
+Everything here is an _example_. The round loop, the durable Subtask DAG, the
+subagent execution and the task lifecycle all live in `@loopingai/core`, so this
+repo is the ~250 lines per agent that are actually yours: plugins, soul, manifest,
+config, and the round contract.
 
 > Part of a three-package split:
 > [`@loopingai/core`](https://github.com/Looping-AI/looping-core) (the mandatory foundation) ·
@@ -59,15 +64,25 @@ A Worker is not one agent. The three here are **tenants** of one deployment — 
 one endpoint, one signing key, one card ([`src/index.ts`](src/index.ts)):
 
 ```ts
+// src/agents/reactive/definition.ts — declared once
+export const reactive = defineAgent({
+  tenant: "reactive",
+  manifest,
+  agent: (env: Env) => env.ReactiveAgent,
+  workflow: (env: Env) => env.HANDLE_TASK_WORKFLOW
+});
+
+// src/index.ts — mounted
 createA2AWorker<Env>({
   manifest: hostManifest,
-  tenants: {
-    reactive: { manifest, resolveAgent, startTurn },
-    proactive: { … },
-    "arc-player": { … }
-  }
+  agents: [reactive, proactive, arcPlayer]
 });
 ```
+
+That same declaration is what the agent's Workflow resolves its DO stub from, so
+the tenant and the workflow can never address different Durable Objects — a
+mismatch that used to type-check perfectly and surface as a task that never
+called back.
 
 ```
 /.well-known/agent-card.json   the stub card for the deployment
@@ -161,9 +176,11 @@ request body, and a token minted for one agent would work against any sibling.
 | [`proactive/`](src/agents/proactive/)   | Sees every message, decides whether each is for it, answers in one turn | **The second consumer** — the only thing proving core isn't shaped around reactive's assumptions |
 | [`arc-player/`](src/agents/arc-player/) | Plays ARC-AGI-3 games                                                   | Proves a domain plugin composes without touching anything shared                                 |
 
-Reactive and arc-player share [`src/round-agent/`](src/round-agent/) — the loop, the DO
-body, the workflow orchestration — and differ in five methods each. Proactive shares none
-of it, which is the point: two genuinely different loop shapes on one core.
+Reactive and arc-player are both `RoundAgentBase` from
+[`@loopingai/core/round`](https://github.com/Looping-AI/looping-core) and differ in five
+methods each. Proactive extends `LoopingAgent` directly and writes its own loop — it
+imports no part of `/round` at all, and `npm run verify:isolation` asserts that on the
+built graph. Two genuinely different loop shapes on one core.
 
 |             | reactive                                                  | proactive                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------ |
@@ -220,19 +237,33 @@ identity nobody chose. That identity is yours to write.
 
 ---
 
-## Delete what you don't want
+## Add or delete an agent
 
-Three edits, no leftovers. To drop `arc-player`:
+One command each.
 
-1. `rm -rf src/agents/arc-player`
-2. Remove its entry from `tenants` and its exports in [`src/index.ts`](src/index.ts)
-3. In [`wrangler.jsonc`](wrangler.jsonc), remove the `ArcPlayerAgent` DO binding (and its
-   `new_sqlite_classes` entry), the `ARC_HANDLE_TASK_WORKFLOW` workflow, and the
-   `ARC_API_KEY` secret — but **not** `A2A_SIGNING_KEY`, which the whole deployment shares
+```bash
+npm run agent:new demo                 # a delegating round agent
+npm run agent:new watcher --kind single  # a single-turn agent, its own loop
+npm run agent:remove arc-player
+```
 
-Then drop its block from `scripts/verify-isolation.mjs`. Dropping `proactive` additionally
-frees you to remove the `triage` plugin; dropping both round agents frees
-`src/round-agent/` entirely.
+Each edits the four places an agent exists — its directory, [`src/index.ts`](src/index.ts),
+[`wrangler.jsonc`](wrangler.jsonc) (DO binding, sqlite migration, workflow binding), and
+[`scripts/verify-isolation.mjs`](scripts/verify-isolation.mjs) — then runs prettier over
+what it touched. `agent:new` then tells you the two things it cannot decide for you: the
+config entry and the agent's soul.
+
+This used to be documented as "three edits, no leftovers". It was five, they were not
+adjacent, and a missed one failed at a different time each: a forgotten DO binding at
+deploy, a forgotten `new_sqlite_classes` entry at the first request, a forgotten
+isolation entry _never_ — it just quietly stopped checking that agent.
+
+Add-then-remove returns all four files byte-for-byte to where they started, which is
+the test that keeps this honest.
+
+> The signing key and `GATEWAY_ORIGINS` are **not** removed: they belong to the
+> deployment, not to any one agent. A secret only one agent's plugins needed —
+> `ARC_API_KEY` — is yours to drop.
 
 ---
 
@@ -252,10 +283,15 @@ and esbuild's **metafile** — the exact list of modules in the graph, not a str
 is checked for plugins that agent does not install:
 
 ```
-✓ reactive: 4090 KiB (ceiling 4395 KiB), 468 modules, no cross-agent plugin
-✓ proactive: 2555 KiB (ceiling 2832 KiB), 452 modules, no cross-agent plugin
-✓ arc-player: 2986 KiB (ceiling 3223 KiB), 466 modules, no cross-agent plugin
+✓ reactive: 3370 KiB (ceiling 3613 KiB), 465 modules, no cross-agent plugin
+✓ proactive: 1557 KiB (ceiling 1709 KiB), 449 modules, no cross-agent plugin
+✓ arc-player: 2866 KiB (ceiling 3223 KiB), 454 modules, no cross-agent plugin
 ```
+
+Proactive's `forbidden` list carries `@loopingai/core/dist/round/` as well as the
+plugins its siblings install. That is the strongest line in the file: core ships the
+whole delegating loop behind an opt-in subpath, and an agent that answers in one turn
+must not pay a byte for it. It is also why proactive is ~1.5 MiB rather than ~2.5.
 
 (Sizes move with every dependency bump; the ceilings are what CI enforces.)
 
@@ -312,12 +348,10 @@ registry.
 Nothing is written to `package.json`, so a plain `npm install` — and CI, which never runs
 this — always builds against the real packages.
 
-> **Check `package-lock.json` before you commit after running this.** `--no-save` protects
-> the manifest, not the lockfile: a later `npm` invocation can regenerate it from the linked
-> tree and pin both packages to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
-> exist on a CI runner — or on your machine once the temp dir is cleaned. If you see `file:`
-> next to a `@loopingai/*` entry, regenerate from the registry with
-> `rm -rf node_modules package-lock.json && npm install`.
+`--no-save` protects the manifest, not the lockfile: npm can still pin both packages to
+`file:/var/folders/…/looping-pack-*.tgz`, and those paths do not exist on a CI runner — or
+on your machine once the temp dir is cleaned. The script now detects that and restores
+`package-lock.json` itself, so the damage no longer lands on whoever pulls next.
 
 ---
 
@@ -325,16 +359,14 @@ this — always builds against the real packages.
 
 ```
 src/
-  index.ts              ← the tenant map: tenant id → agent
+  index.ts              ← the agents this Worker mounts
   host-manifest.ts      ← the stub card served at the well-known path
   config.ts             ← model ids, budgets, limits (values; core owns the shapes)
-  plugin-host.ts        ← what a plugin may need from its host
-  caller-context.ts     ← rendering of the verified gateway identity
-  round-agent/          ← shared by reactive + arc-player: turn loop, DO body, workflow, subagent
+  round-policy.ts       ← the round contract + user-facing copy (core ships no prompt copy)
   agents/
-    reactive/           ← plugins, soul, manifest, the `general` plugin, thin subclasses
-    proactive/          ← its own loop, DO, workflow, plugins, soul, manifest
-    arc-player/         ← plugins, soul, manifest, thin subclasses
+    reactive/           ← definition, plugins, soul, manifest, the `general` plugin
+    proactive/          ← its own loop + workflow, plus the same five files
+    arc-player/         ← definition, plugins, soul, manifest, thin subclasses
 test/
 scripts/
 ```

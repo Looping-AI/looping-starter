@@ -2,8 +2,8 @@ import type { AgentPlugin } from "@loopingai/core";
 import { browser } from "@loopingai/plugins/browser";
 import { recall } from "@loopingai/plugins/recall";
 import { triage } from "@loopingai/plugins/triage";
-import { PROACTIVE_CONFIG, RECALL, TRIAGE } from "@/config";
-import type { PluginHost } from "@/plugin-host";
+import { RECALL, TRIAGE } from "@/config";
+import type { PluginHost } from "@loopingai/core/host";
 
 /**
  * The one file you edit to add or remove a capability for the proactive agent.
@@ -18,7 +18,7 @@ import type { PluginHost } from "@/plugin-host";
  * no subagent execution ever needs a durable file store — and `@cloudflare/shell`
  * is a real dependency to carry for nothing.
  */
-export const plugins = (host: PluginHost): AgentPlugin[] => [
+export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
   // The pre-turn gate: is this message even for me?
   //
   // An agent that sees every message in its channels is mostly seeing messages
@@ -28,13 +28,7 @@ export const plugins = (host: PluginHost): AgentPlugin[] => [
   // the decision somewhere it cannot be skipped, and it fails open: a gate that
   // throws counts as `true`, because a wrong reply is noise the user can see and
   // ignore while a wrong silence is invisible to whoever needed an answer.
-  triage({
-    ai: host.env.AI,
-    aiGatewayId: PROACTIVE_CONFIG.model?.aiGatewayId,
-    modelId: TRIAGE.modelId,
-    historyMessages: TRIAGE.historyMessages,
-    messageMaxChars: TRIAGE.messageMaxChars
-  }),
+  triage({ ai: host.env.AI, aiGatewayId: host.aiGatewayId, ...TRIAGE }),
 
   // Read web pages. Requires the `BROWSER` binding and a paid Workers plan.
   browser({ binding: host.env.BROWSER }),
@@ -44,9 +38,11 @@ export const plugins = (host: PluginHost): AgentPlugin[] => [
     ai: host.env.AI,
     index: host.env.VECTORIZE,
     namespace: host.callerKey,
-    aiGatewayId: PROACTIVE_CONFIG.model?.aiGatewayId,
-    embeddingModelId: RECALL.embeddingModelId,
-    topK: RECALL.topK,
-    metadataTextMax: RECALL.metadataTextMax
+    // `host.aiGatewayId` is the **resolved** value. Reading it off
+    // `PROACTIVE_CONFIG.model?.aiGatewayId` — as this used to — yields
+    // `undefined` the moment that override is dropped in favour of core's
+    // default, and these calls quietly stop being correlated.
+    aiGatewayId: host.aiGatewayId,
+    ...RECALL
   })
 ];

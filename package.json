@@ -25,31 +25,33 @@
     "verify:isolation": "node scripts/verify-isolation.mjs",
     "link:local": "node scripts/link-local.mjs",
     "cf": "node scripts/cf.mjs",
-    "prepare": "husky"
+    "prepare": "husky",
+    "agent:new": "node scripts/agent.mjs new",
+    "agent:remove": "node scripts/agent.mjs remove"
   },
   "dependencies": {
-    "@a2a-js/sdk": "^1.0.0",
+    "@a2a-js/sdk": "^1.0.1",
     "@cloudflare/shell": "0.4.3",
-    "@loopingai/core": "^0.3.1",
-    "@loopingai/plugins": "^0.2.1",
-    "agents": "^0.20.0",
-    "ai": "^7.0.40",
+    "@loopingai/core": "^0.5.0",
+    "@loopingai/plugins": "^0.3.0",
+    "agents": "^0.20.1",
+    "ai": "^7.0.52",
     "drizzle-orm": "^0.45.2",
-    "jose": "^6.2.7",
+    "jose": "^6.2.8",
     "workers-ai-provider": "^4.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.20.1",
-    "@types/node": "^26.1.1",
+    "@cloudflare/vitest-pool-workers": "^0.20.2",
+    "@types/node": "^26.1.2",
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
     "husky": "^9.1.7",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0",
+    "typescript-eslint": "^8.66.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.119.0"
   },
   "engines": {
     "node": ">=24"

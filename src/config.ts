@@ -19,8 +19,35 @@ import type { CoreConfigOverrides } from "@loopingai/core";
  * What every agent in this Worker shares: the model pair and the gateway they
  * are billed and correlated through.
  *
- * The fallback is deliberately a *different vendor and family* from the primary.
- * A same-family fallback shares the failure mode you are falling back from.
+ * **You must choose these. Core ships no default, on purpose.** Which model an
+ * agent runs on sets the cost of every turn, the tool-calling reliability the
+ * whole control-tool design rests on, and the failure modes the fallback exists
+ * to escape. A framework default would be making that call on your behalf,
+ * silently, and being wrong for most agents — and a model id frozen into a
+ * published package outlives every deprecation until someone bumps the package.
+ * Written here, it is read by whoever owns the bill.
+ *
+ * ## Why this pair
+ *
+ * **Primary — `@cf/zai-org/glm-5.2`.** This loop lives or dies on function
+ * calling: a round ends only when the model calls a *control tool*, and a model
+ * that answers in prose instead of calling `final_reply` burns the whole budget
+ * reaching no ending. GLM is picked for reliable multi-tool-call behaviour over
+ * long contexts, which is what a delegating round actually is — read branch
+ * results, decide, call one of several endings.
+ *
+ * **Fallback — `@cf/moonshotai/kimi-k2.7-code`.** Deliberately a *different
+ * vendor and family*. The fallback exists for when the primary throws, and the
+ * things that make it throw — an outage, a rate limit, a deprecation, a bad
+ * deploy of one vendor's serving stack — are correlated within a family. A
+ * same-family fallback is a retry wearing a costume; core now refuses an
+ * identical pair outright for this reason.
+ *
+ * ## Changing them
+ *
+ * Both must support function calling and tolerate a long system prompt. After
+ * changing either, re-read `mainAgentLimits.maxTurns`: a model that needs more
+ * steps to reach an ending spends the same budget faster.
  */
 const MODEL = {
   chatModelId: "@cf/zai-org/glm-5.2",
@@ -70,10 +97,19 @@ export const ARC_PLAYER_CONFIG: CoreConfigOverrides = {
 
 /**
  * The proactive agent: single-turn, no delegation, so most of the delegation
- * config above is inert for it and left at core's defaults.
+ * config above is inert for it and left at core's baseline.
  *
- * A cheaper, faster fallback than reactive's: this agent answers in one turn in
- * a live channel, where a slow reply is worse than a slightly weaker one.
+ * **Same primary, different fallback — `@cf/google/gemma-4-26b-a4b-it`.** This
+ * agent answers in one turn in a live channel, so its fallback is chosen for
+ * latency rather than depth: when the primary is down, a fast adequate reply
+ * beats a slow strong one that arrives after the conversation moved on. That is
+ * the opposite trade from reactive, whose fallback still has to hold a
+ * delegating round together, and it is exactly the kind of per-agent judgement
+ * a framework default cannot make.
+ *
+ * Still a different vendor from the primary, for the same correlated-failure
+ * reason as reactive's.
+ *
  * `compactAfterTokens` is far higher because a channel conversation is long and
  * cheap per message, unlike a delegating agent's branch results.
  */
