@@ -99,45 +99,55 @@ const lockfile = path.join(root, "package-lock.json");
 const lockBefore = existsSync(lockfile) ? readFileSync(lockfile, "utf8") : null;
 
 console.log(`installing ${tarballs.length} tarball(s)…`);
-// `--no-save` keeps the published ranges in package.json intact.
-execFileSync("npm", ["install", "--no-save", ...tarballs], {
-  cwd: root,
-  stdio: "inherit"
-});
-
-/**
- * Put the lockfile back exactly as it was.
- *
- * `--no-save` protects the *manifest*, not the lockfile: npm can still pin
- * `@loopingai/*` to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
- * exist on a CI runner — or on this machine once the temp dir is cleaned — so the
- * damage surfaces as a failed install belonging to whoever pulls next, with no
- * connection to the command that caused it. The README used to ask the developer
- * to notice this by hand.
- *
- * Restoring is safe precisely because the linked install is meant to be
- * throwaway: `node_modules` keeps the local tarballs, the lockfile keeps
- * describing the registry, and a plain `npm install` puts the two back in step.
- *
- * *Any* difference is reverted, not just a `file:` path. Everything npm writes
- * here is an artifact of a throwaway install — a dropped `integrity`, a
- * rewritten `version`, a reordered key — so none of it is worth keeping, and
- * matching one known-bad pattern only holds until npm records it differently.
- */
-if (lockBefore === null) {
-  // Nothing to protect: npm wrote the repo's first lockfile. Removing it leaves
-  // the tree as found, and stops one full of temp paths becoming what gets
-  // committed.
-  if (existsSync(lockfile)) {
-    rmSync(lockfile);
-    console.log("removed package-lock.json — there was none before this ran.");
+try {
+  // `--no-save` keeps the published ranges in package.json intact.
+  execFileSync("npm", ["install", "--no-save", ...tarballs], {
+    cwd: root,
+    stdio: "inherit"
+  });
+} finally {
+  /**
+   * Put the lockfile back exactly as it was — even if the install above threw.
+   *
+   * `--no-save` protects the *manifest*, not the lockfile: npm can still pin
+   * `@loopingai/*` to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
+   * exist on a CI runner — or on this machine once the temp dir is cleaned — so the
+   * damage surfaces as a failed install belonging to whoever pulls next, with no
+   * connection to the command that caused it. The README used to ask the developer
+   * to notice this by hand.
+   *
+   * A `finally` because a rejected install can still have rewritten the lockfile
+   * partway through — npm resolves the tree before it fails on the first conflict
+   * it hits — so skipping this on the throwing path would leave exactly the
+   * corruption it exists to prevent, for a caller who has no reason to expect it
+   * from a command that just failed.
+   *
+   * Restoring is safe precisely because the linked install is meant to be
+   * throwaway: `node_modules` keeps the local tarballs, the lockfile keeps
+   * describing the registry, and a plain `npm install` puts the two back in step.
+   *
+   * *Any* difference is reverted, not just a `file:` path. Everything npm writes
+   * here is an artifact of a throwaway install — a dropped `integrity`, a
+   * rewritten `version`, a reordered key — so none of it is worth keeping, and
+   * matching one known-bad pattern only holds until npm records it differently.
+   */
+  if (lockBefore === null) {
+    // Nothing to protect: npm wrote the repo's first lockfile. Removing it leaves
+    // the tree as found, and stops one full of temp paths becoming what gets
+    // committed.
+    if (existsSync(lockfile)) {
+      rmSync(lockfile);
+      console.log(
+        "removed package-lock.json — there was none before this ran."
+      );
+    }
+  } else if (readFileSync(lockfile, "utf8") !== lockBefore) {
+    writeFileSync(lockfile, lockBefore);
+    console.log(
+      "restored package-lock.json — npm had rewritten it against the temp " +
+        "tarballs, whose paths exist on this machine, until they don't."
+    );
   }
-} else if (readFileSync(lockfile, "utf8") !== lockBefore) {
-  writeFileSync(lockfile, lockBefore);
-  console.log(
-    "restored package-lock.json — npm had rewritten it against the temp " +
-      "tarballs, whose paths exist on this machine, until they don't."
-  );
 }
 
 console.log("done. Re-run after changing either sibling.");

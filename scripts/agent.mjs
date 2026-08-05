@@ -56,11 +56,12 @@ function die(message) {
 if (!command || !["new", "remove"].includes(command)) {
   die("usage: npm run agent:new <tenant> | npm run agent:remove <tenant>");
 }
-if (!tenant || !/^[a-z][a-z0-9-]*$/.test(tenant)) {
+if (!tenant || !/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(tenant)) {
   die(
     `invalid tenant '${tenant ?? ""}'. A tenant id is lowercase letters, digits ` +
-      "and hyphens — it is what a gateway registers against, so it appears in a " +
-      "URL and in a JWT claim."
+      "and single hyphens between them — no leading, trailing or repeated ones " +
+      "— it is what a gateway registers against, so it appears in a URL and in " +
+      "a JWT claim."
   );
 }
 if (!KINDS.has(kind)) {
@@ -74,6 +75,70 @@ const pascal = tenant
   .join("");
 /** `arc-player` → `ARC_PLAYER`. The workflow binding name. */
 const screaming = tenant.replace(/-/g, "_").toUpperCase();
+/** `arc-player` → `arcPlayer`. The `definition.ts` export and its import alias. */
+const camel = pascal[0].toLowerCase() + pascal.slice(1);
+
+/**
+ * Words a bare `export const <name> = …` or `import { <name> } from …` cannot
+ * be, in source or in strict mode. A tenant that camel-cases to one of these
+ * (`"default"`, `"class"`, …) would otherwise generate TypeScript that fails to
+ * parse rather than to type-check — the worst place to find out, since neither
+ * `tsc` nor a linter names the actual cause.
+ */
+const RESERVED_WORDS = new Set([
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "return",
+  "static",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+  "await",
+  "implements"
+]);
+if (RESERVED_WORDS.has(camel)) {
+  die(
+    `invalid tenant '${tenant}': camel-cases to '${camel}', a reserved word — ` +
+      "it cannot be used as an export name. Pick a different tenant id."
+  );
+}
 
 const dir = path.join(root, "src/agents", tenant);
 const files = {
@@ -163,15 +228,13 @@ import { manifest } from "./manifest";
  * \`src/index.ts\` mounts the tenant from this, and \`./workflow.ts\` resolves its DO
  * stub from this, so the two cannot address different Durable Objects.
  */
-export const ${tenant.replace(/-([a-z])/g, (_, c) => c.toUpperCase())} = defineAgent({
+export const ${camel} = defineAgent({
   tenant: "${tenant}",
   manifest,
   agent: (env: Env) => env.${pascal}Agent,
   workflow: (env: Env) => env.${screaming}_WORKFLOW
 });
 `;
-
-const camel = tenant.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
 const SUBAGENT_TS = `import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
 import type { PluginHost } from "@loopingai/core/host";
@@ -197,7 +260,7 @@ export class ${pascal}Subagent extends RecipeSubagentHost<Env> {
 }
 `;
 
-const WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
+const ROUND_WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@loopingai/core";
 import { runHandleTask, type HandleTaskParams } from "@loopingai/core/round";
@@ -221,6 +284,40 @@ export class ${pascal}Workflow extends WorkflowEntrypoint<Env, HandleTaskParams>
 }
 `;
 
+/**
+ * defineAgent's "workflow" accessor is required for every agent, round or
+ * single — there is no core-provided single-turn orchestration to call the way
+ * runHandleTask covers the round case, so this is a stub, not a working
+ * implementation. Without it, --kind single would leave definition.ts pointing
+ * workflow: (env) => env.${screaming}_WORKFLOW at a class nothing exports — a
+ * Worker that fails wrangler types --check and cannot deploy.
+ */
+const SINGLE_WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
+import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import type { AcceptedTurn } from "@loopingai/core/a2a";
+
+/**
+ * The ${tenant} agent's task workflow.
+ *
+ * Core ships no single-turn orchestration — compare \`../reactive/workflow.ts\`,
+ * which is entirely \`@loopingai/core/round\`. Resolve the agent DO (\`./definition\`
+ * exports it), drive whatever turn method \`./agent.ts\` ends up exposing, and
+ * persist + notify through the \`markWorking\`/\`saveTask\` RPCs every agent's
+ * Durable Object already has. See \`../proactive/workflow.ts\` for a worked
+ * example of the whole shape.
+ */
+export class ${pascal}Workflow extends WorkflowEntrypoint<Env, AcceptedTurn> {
+  async run(
+    _event: Readonly<WorkflowEvent<AcceptedTurn>>,
+    _step: WorkflowStep
+  ): Promise<void> {
+    throw new Error(
+      "TODO: ${pascal}Workflow has not been implemented yet — see ../proactive/workflow.ts"
+    );
+  }
+}
+`;
+
 const PLUGINS_TS = `import type { AgentPlugin } from "@loopingai/core";
 import type { PluginHost } from "@loopingai/core/host";
 
@@ -235,7 +332,10 @@ import type { PluginHost } from "@loopingai/core/host";
  * Each agent has its own copy of this file. There is deliberately no shared one:
  * a single list would put every plugin in every agent.
  */
-export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
+// Prefix removed once a plugin actually reads \`host\` — an empty list installs
+// nothing, and this repo's own \`@typescript-eslint/no-unused-vars\` fails
+// \`npm run check\` on an unused parameter.
+export const plugins = (_host: PluginHost<Env>): AgentPlugin[] => [
   // e.g. browser({ binding: host.env.BROWSER }),
 ];
 `;
@@ -308,9 +408,15 @@ function createAgent() {
   write(path.join(dir, "plugins.ts"), PLUGINS_TS);
   write(path.join(dir, "soul.ts"), SOUL_TS);
   write(path.join(dir, "manifest.ts"), MANIFEST_TS);
+  // Every kind gets a workflow.ts: `defineAgent`'s `workflow` accessor is
+  // required regardless, so a single-turn agent needs one too — just a stub,
+  // since core has no orchestration to call the way round has `runHandleTask`.
+  write(
+    path.join(dir, "workflow.ts"),
+    isRound ? ROUND_WORKFLOW_TS : SINGLE_WORKFLOW_TS
+  );
   if (isRound) {
     write(path.join(dir, "subagent.ts"), SUBAGENT_TS);
-    write(path.join(dir, "workflow.ts"), WORKFLOW_TS);
   }
   console.log(`  ✓ src/agents/${tenant}/`);
 
@@ -323,11 +429,9 @@ function createAgent() {
     const exports = [
       `export { ${pascal}Agent } from "./agents/${tenant}/agent";`,
       ...(isRound
-        ? [
-            `export { ${pascal}Subagent } from "./agents/${tenant}/subagent";`,
-            `export { ${pascal}Workflow } from "./agents/${tenant}/workflow";`
-          ]
-        : [])
+        ? [`export { ${pascal}Subagent } from "./agents/${tenant}/subagent";`]
+        : []),
+      `export { ${pascal}Workflow } from "./agents/${tenant}/workflow";`
     ].join("\n");
     out = out.replace(/(\n\/\*\*\n \* One Worker,)/, `\n${exports}\n$1`);
     return out.replace(/(agents: \[)([^\]]*)\]/, `$1$2, ${camel}]`);
@@ -352,11 +456,11 @@ function createAgent() {
   edit(files.isolation, "per-agent graph check", (s) =>
     s.replace(
       /(\n\];)/,
-      `,\n  {\n    name: "${tenant}",\n    entries: [\n      "src/agents/${tenant}/agent.ts"${
-        isRound
-          ? `,\n      "src/agents/${tenant}/workflow.ts",\n      "src/agents/${tenant}/subagent.ts"`
-          : ""
-      }\n    ],\n    // Every plugin another agent installs and this one must not.\n    forbidden: [],\n    maxBytes: 4_000_000\n  }$1`
+      `,\n  {\n    name: "${tenant}",\n    entries: [\n      "src/agents/${tenant}/agent.ts",\n      "src/agents/${tenant}/workflow.ts"${
+        isRound ? `,\n      "src/agents/${tenant}/subagent.ts"` : ""
+      }\n    ],\n    // Every plugin another agent installs and this one must not.\n    forbidden: [${
+        isRound ? "" : 'core("round")'
+      }],\n    maxBytes: 4_000_000\n  }$1`
     )
   );
 
@@ -386,8 +490,17 @@ function removeAgent() {
           !line.includes(`./agents/${tenant}/definition`)
       )
       .join("\n")
-      .replace(new RegExp(`,?\\s*\\b${camel}\\b`, "g"), "")
-      .replace(/agents: \[\s*,/, "agents: [")
+      // Scoped to the `agents: [...]` array itself, not a file-wide word-boundary
+      // replace: a tenant that camel-cases to `fetch`, `manifest` or `agents`
+      // would otherwise corrupt an unrelated identifier or property name
+      // anywhere else in this file that happens to spell the same word.
+      .replace(/agents: \[([^\]]*)\]/, (_m, inner) => {
+        const items = inner
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s && s !== camel);
+        return `agents: [${items.join(", ")}]`;
+      })
   );
 
   edit(files.wrangler, "DO binding, sqlite migration, workflow", (s) =>
