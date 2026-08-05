@@ -24,18 +24,43 @@
  * change up.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+/** Checkouts this repo composes. A missing one is an error. */
 const SIBLINGS = ["looping-core", "looping-plugins"];
+
+/**
+ * Packed too when present, skipped when not.
+ *
+ * `looping-a2a-protocol` is the wire contract `@loopingai/core` and
+ * looping-gateway both depend on. Nothing here imports it directly and it
+ * changes about once a year, so requiring the checkout would break `link:local`
+ * for everyone who only has the two above — but when it *is* checked out, an
+ * edit to it must reach this build, or a linked core silently resolves the
+ * published copy and the change under test is not the one running.
+ */
+const OPTIONAL_SIBLINGS = ["looping-a2a-protocol"];
+
 const root = path.resolve(import.meta.dirname, "..");
 const out = mkdtempSync(path.join(tmpdir(), "looping-pack-"));
 const tarballs = [];
 
-for (const name of SIBLINGS) {
+for (const name of [...SIBLINGS, ...OPTIONAL_SIBLINGS]) {
   const dir = path.resolve(root, "..", name);
   if (!existsSync(dir)) {
+    if (OPTIONAL_SIBLINGS.includes(name)) {
+      console.log(`${name} not checked out — using the published package.`);
+      continue;
+    }
     console.error(
       `${name} not found at ${dir}.\n` +
         "Check out the three repos as siblings, or skip this script and use the " +
@@ -56,10 +81,63 @@ for (const file of readdirSync(out)) {
   if (file.endsWith(".tgz")) tarballs.push(path.join(out, file));
 }
 
+/**
+ * The lockfile's exact bytes, captured *before* npm runs — this snapshot is what
+ * gets put back below.
+ *
+ * The predecessor restored with `git checkout -- package-lock.json`, which takes
+ * the file from the index and so silently discards any uncommitted lockfile work
+ * in progress: a dependency bump being tested, a conflict just resolved by hand.
+ * A development helper destroying unrelated work is the one thing it must never
+ * do, and the loss is invisible — the script prints that it *restored* the file.
+ *
+ * Reading the bytes is also fewer moving parts than shelling out to git: it
+ * works on an untracked lockfile, in a fresh clone with nothing staged, and
+ * outside a git checkout entirely.
+ */
+const lockfile = path.join(root, "package-lock.json");
+const lockBefore = existsSync(lockfile) ? readFileSync(lockfile, "utf8") : null;
+
 console.log(`installing ${tarballs.length} tarball(s)…`);
 // `--no-save` keeps the published ranges in package.json intact.
 execFileSync("npm", ["install", "--no-save", ...tarballs], {
   cwd: root,
   stdio: "inherit"
 });
+
+/**
+ * Put the lockfile back exactly as it was.
+ *
+ * `--no-save` protects the *manifest*, not the lockfile: npm can still pin
+ * `@loopingai/*` to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
+ * exist on a CI runner — or on this machine once the temp dir is cleaned — so the
+ * damage surfaces as a failed install belonging to whoever pulls next, with no
+ * connection to the command that caused it. The README used to ask the developer
+ * to notice this by hand.
+ *
+ * Restoring is safe precisely because the linked install is meant to be
+ * throwaway: `node_modules` keeps the local tarballs, the lockfile keeps
+ * describing the registry, and a plain `npm install` puts the two back in step.
+ *
+ * *Any* difference is reverted, not just a `file:` path. Everything npm writes
+ * here is an artifact of a throwaway install — a dropped `integrity`, a
+ * rewritten `version`, a reordered key — so none of it is worth keeping, and
+ * matching one known-bad pattern only holds until npm records it differently.
+ */
+if (lockBefore === null) {
+  // Nothing to protect: npm wrote the repo's first lockfile. Removing it leaves
+  // the tree as found, and stops one full of temp paths becoming what gets
+  // committed.
+  if (existsSync(lockfile)) {
+    rmSync(lockfile);
+    console.log("removed package-lock.json — there was none before this ran.");
+  }
+} else if (readFileSync(lockfile, "utf8") !== lockBefore) {
+  writeFileSync(lockfile, lockBefore);
+  console.log(
+    "restored package-lock.json — npm had rewritten it against the temp " +
+      "tarballs, whose paths exist on this machine, until they don't."
+  );
+}
+
 console.log("done. Re-run after changing either sibling.");

@@ -38,13 +38,6 @@ export const GENERAL_SUBAGENT_SOUL = [
   "Use your tools when they help, and never fabricate a tool result."
 ].join("\n");
 
-export interface GeneralConfig {
-  /** Primary model for a general run. Pass the host's `config.model.chatModelId`. */
-  primaryModelId: string;
-  /** Fallback model. Pass the host's `config.model.fallbackChatModelId`. */
-  fallbackModelId: string;
-}
-
 /**
  * The catch-all: any self-contained unit of work with no domain of its own.
  *
@@ -52,7 +45,7 @@ export interface GeneralConfig {
  * before the specialized types — order in that array is the order the model is
  * shown them, and it is the one thing this type's placement actually controls.
  */
-export function general(config: GeneralConfig): AgentPlugin {
+export function general(): AgentPlugin {
   return definePlugin({
     key: "general",
 
@@ -65,8 +58,6 @@ export function general(config: GeneralConfig): AgentPlugin {
       recipe: {
         key: "general",
         version: 1,
-        primaryModelId: config.primaryModelId,
-        fallbackModelId: config.fallbackModelId,
         soul: GENERAL_SUBAGENT_SOUL,
         // Named families, not imported tools. `validateRecipe` drops any family
         // no installed plugin registered, so uninstalling `/browser` degrades

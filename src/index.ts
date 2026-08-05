@@ -1,15 +1,9 @@
-import { env } from "cloudflare:workers";
 import { createA2AWorker } from "@loopingai/core/worker";
-import {
-  ignoreAlreadyExists,
-  workflowIdForMessage,
-  type AcceptedTurn
-} from "@loopingai/core/a2a";
 
 import { hostManifest } from "./host-manifest";
-import { manifest as reactiveManifest } from "./agents/reactive/manifest";
-import { manifest as proactiveManifest } from "./agents/proactive/manifest";
-import { manifest as arcPlayerManifest } from "./agents/arc-player/manifest";
+import { reactive } from "./agents/reactive/definition";
+import { proactive } from "./agents/proactive/definition";
+import { arcPlayer } from "./agents/arc-player/definition";
 
 // Durable Objects and Workflows must be exported from the Worker entry so the
 // runtime can resolve them by class name. `ReactiveSubagent` / `ArcPlayerSubagent`
@@ -20,15 +14,9 @@ export { ReactiveSubagent } from "./agents/reactive/subagent";
 export { HandleTaskWorkflow } from "./agents/reactive/workflow";
 export { ProactiveAgent } from "./agents/proactive/agent";
 export { NotifyTaskWorkflow } from "./agents/proactive/workflow";
-export {
-  ArcPlayerAgent,
-  ArcHandleTaskWorkflow
-} from "./agents/arc-player/agent";
+export { ArcPlayerAgent } from "./agents/arc-player/agent";
 export { ArcPlayerSubagent } from "./agents/arc-player/subagent";
-
-import { getAgent as reactiveAgent } from "./agents/reactive/agent";
-import { getAgent as proactiveAgent } from "./agents/proactive/agent";
-import { getAgent as arcPlayerAgent } from "./agents/arc-player/agent";
+export { ArcHandleTaskWorkflow } from "./agents/arc-player/workflow";
 
 /**
  * One Worker, three agents, addressed by A2A `tenant`.
@@ -40,6 +28,12 @@ import { getAgent as arcPlayerAgent } from "./agents/arc-player/agent";
  * /.well-known/jwks.json         the one public key, verifying every card
  * /a2a                           every agent, picked by params.tenant
  * ```
+ *
+ * Each agent is one `defineAgent` call in its own `definition.ts` — tenant id,
+ * card, Durable Object, Workflow. That declaration is what is mounted here *and*
+ * what the agent's Workflow resolves its DO stub from, so the two can never
+ * address different objects. Adding an agent is one file plus a line below plus
+ * its wrangler bindings; `npm run agent:new <tenant>` does all of it.
  *
  * ## Why not a path prefix per agent
  *
@@ -61,69 +55,15 @@ import { getAgent as arcPlayerAgent } from "./agents/arc-player/agent";
  *
  * The three used to hold their own, which never bought anything: they share a
  * Worker and an `env`, so each could always read the others' secrets. The card
- * is per-origin now and so is the key, which is simply honest about where the
- * boundary is — `A2A_SIGNING_KEY`, core's default, so no `secrets` option.
+ * is per-origin now and so is the key — `A2A_SIGNING_KEY`, core's default.
  *
  * What separates them is the gateway token's tenant claim, checked by core
  * against the tenant the request addressed. That is a real boundary: it is
  * cryptographic, and it holds even though all three share an audience.
  */
-
-/** The workflow bindings a turn can be started on. */
-type TurnWorkflow =
-  "HANDLE_TASK_WORKFLOW" | "ARC_HANDLE_TASK_WORKFLOW" | "NOTIFY_WORKFLOW";
-
-/**
- * Start a turn on one workflow binding, idempotently.
- *
- * The instance id is derived from the gateway's `messageId`, which is stable
- * across dispatch retries — so a retry finding its instance already running is
- * the idempotency working, not a failure. `ignoreAlreadyExists` swallows exactly
- * that race and rethrows everything else.
- */
-function startOn(binding: TurnWorkflow) {
-  return (turn: AcceptedTurn): Promise<void> =>
-    ignoreAlreadyExists(() =>
-      env[binding].create({
-        id: workflowIdForMessage(turn.messageId),
-        params: { ...turn }
-      })
-    );
-}
-
-/**
- * The agents, keyed by the tenant id a caller addresses them with.
- *
- * To remove one: delete its entry here, its `src/agents/<name>/` directory, and
- * its Durable Object and Workflow entries in `wrangler.jsonc`. Three edits, no
- * leftovers — and `npm run verify:isolation` proves the rest of the Worker never
- * depended on it.
- *
- * These ids are what a gateway registers against, so renaming one is a
- * re-registration, not a refactor.
- */
 export default {
   fetch: createA2AWorker<Env>({
     manifest: hostManifest,
-    tenants: {
-      reactive: {
-        manifest: reactiveManifest,
-        // One DO instance per verified caller — what makes a task unreachable
-        // from any other caller by construction. The tenant picks the agent;
-        // this picks which instance of it.
-        resolveAgent: reactiveAgent,
-        startTurn: startOn("HANDLE_TASK_WORKFLOW")
-      },
-      proactive: {
-        manifest: proactiveManifest,
-        resolveAgent: proactiveAgent,
-        startTurn: startOn("NOTIFY_WORKFLOW")
-      },
-      "arc-player": {
-        manifest: arcPlayerManifest,
-        resolveAgent: arcPlayerAgent,
-        startTurn: startOn("ARC_HANDLE_TASK_WORKFLOW")
-      }
-    }
+    agents: [reactive, proactive, arcPlayer]
   })
 } satisfies ExportedHandler<Env>;

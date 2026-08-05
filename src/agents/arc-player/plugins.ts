@@ -1,7 +1,7 @@
 import type { AgentPlugin } from "@loopingai/core";
 import { arcAgi } from "@loopingai/plugins/arc-agi";
 import { workspace } from "@loopingai/plugins/workspace";
-import type { PluginHost } from "@/plugin-host";
+import type { PluginHost } from "@loopingai/core/host";
 
 /**
  * The arc-player's capabilities. Two lines, and that is the whole example.
@@ -18,18 +18,12 @@ import type { PluginHost } from "@/plugin-host";
  * also what makes the isolation check meaningful — the reactive agent's graph
  * carries both and no arc-agi, this one the reverse.
  */
-export const plugins = (host: PluginHost): AgentPlugin[] => [
+export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
   arcAgi({
     apiKey: host.env.ARC_API_KEY,
     // The DO's own storage, for the `arc_scorecards` ledger. The plugin declares
     // the table through its `PluginStore`; `AgentDB` runs the DDL at DO start.
-    storage: host.storage,
-    // A play is a long sequence of cheap spatial decisions, not conversation, so
-    // it could reasonably run on a different pair. Passing the agent's own keeps
-    // one model story for this example — and `validateRecipe` would substitute
-    // them anyway, since a recipe may only name models in the host's allowlist.
-    primaryModelId: host.primaryModelId,
-    fallbackModelId: host.fallbackModelId
+    storage: host.storage
   }),
 
   // A play accumulates notes across chunks — what the level looks like, which

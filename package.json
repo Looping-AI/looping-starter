@@ -25,7 +25,9 @@
     "verify:isolation": "node scripts/verify-isolation.mjs",
     "link:local": "node scripts/link-local.mjs",
     "cf": "node scripts/cf.mjs",
-    "prepare": "husky"
+    "prepare": "husky",
+    "agent:new": "node scripts/agent.mjs new",
+    "agent:remove": "node scripts/agent.mjs remove"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.0.0",

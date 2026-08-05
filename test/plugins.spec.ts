@@ -19,16 +19,11 @@ import { REACTIVE_CONFIG } from "@/config";
  * published one.
  */
 
-const MODELS = {
-  primaryModelId: REACTIVE_CONFIG.model!.chatModelId!,
-  fallbackModelId: REACTIVE_CONFIG.model!.fallbackChatModelId!
-};
-
 describe("a plugin this repo writes", () => {
   it("registers its subtask type like any published one", () => {
     const runtime = createAgentRuntime({
       config: REACTIVE_CONFIG,
-      plugins: [general(MODELS)]
+      plugins: [general()]
     });
 
     expect(runtime.types.keys).toEqual(["general"]);
@@ -41,7 +36,7 @@ describe("a plugin this repo writes", () => {
     // is exactly why this plugin lives in the starter and not in a library.
     const runtime = createAgentRuntime({
       config: REACTIVE_CONFIG,
-      plugins: [general(MODELS)]
+      plugins: [general()]
     });
     const recipe = runtime.types.resolveRecipe("general");
 
@@ -57,7 +52,7 @@ describe("a plugin this repo writes", () => {
     // `/browser` leaves a working subagent with fewer tools, not a broken one.
     const runtime = createAgentRuntime({
       config: REACTIVE_CONFIG,
-      plugins: [general(MODELS)] // neither family installed
+      plugins: [general()] // neither family installed
     });
     const validated = validateRecipe(
       runtime.types.resolveRecipe("general"),
@@ -97,7 +92,7 @@ describe("contract skew between the three repos", () => {
     expect(() =>
       createAgentRuntime({
         config: REACTIVE_CONFIG,
-        plugins: [general(MODELS), general(MODELS)]
+        plugins: [general(), general()]
       })
     ).toThrow(/duplicate plugin key/);
   });
@@ -128,6 +123,10 @@ describe("config resolution", () => {
     // call on a near-empty middle.
     expect(() =>
       resolveConfig({
+        // Required now: core ships no model default, so every config names its
+        // own pair. Reuses this repo's, since the assertion is about session
+        // arithmetic and nothing else.
+        model: REACTIVE_CONFIG.model,
         session: { compactAfterTokens: 12_000, compactTailTokens: 5_000 }
       })
     ).toThrow(
