@@ -25,3 +25,18 @@ GATEWAY_ORIGINS=
 # from the ARC-AGI-3 web console. Required only by the arc-player agent
 # (@loopingai/plugins/arc-agi declares it). Delete this line if you remove it.
 ARC_API_KEY=
+
+# PUBLIC_BASE_URL: the origin this Worker is reachable at, with no trailing
+# slash — e.g. https://looping-starter.example.workers.dev. Locally, the address
+# `wrangler dev` prints (http://localhost:8787).
+#
+# Required by the reactive agent's `slides` plugin, which builds the deck links
+# it hands to Slack from it. It cannot be derived at use time: the link is
+# attached inside a Durable Object, which has no inbound request to read an
+# origin off — so the deployment has to state its own.
+#
+# Not confidential, and here anyway. Like GATEWAY_ORIGINS it varies per
+# environment, and a value committed to wrangler.jsonc as a `var` is wrong for
+# every deployment except the one whose hostname happened to be checked in —
+# which fails silently, as links that resolve to somebody else's Worker.
+PUBLIC_BASE_URL=

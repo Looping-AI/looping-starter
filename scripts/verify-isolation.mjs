@@ -32,6 +32,15 @@ const root = path.resolve(import.meta.dirname, "..");
 const plugin = (name) => `@loopingai/plugins/dist/${name}/`;
 /** A core subpath. `/round` is the delegation engine — opt-in, and its own graph. */
 const core = (name) => `@loopingai/core/dist/${name}/`;
+/**
+ * A plugin this repo writes rather than installs, matched by source path.
+ *
+ * The same assertion as `plugin()` and just as necessary: a starter-owned plugin
+ * lives under one agent's directory, so the way it leaks is an import from a
+ * sibling agent, which is precisely what the metafile can see and a grep of
+ * `dist/` cannot.
+ */
+const local = (agent, name) => `src/agents/${agent}/${name}/`;
 
 /**
  * One agent, its entry points, and what must not be in its graph.
@@ -70,7 +79,8 @@ const AGENTS = [
       plugin("arc-agi"),
       plugin("workspace"),
       "@cloudflare/shell",
-      core("round")
+      core("round"),
+      local("reactive", "slides")
     ],
     maxBytes: 1_750_000
   },
@@ -80,8 +90,15 @@ const AGENTS = [
       "src/agents/arc-player/agent.ts",
       "src/agents/arc-player/subagent.ts"
     ],
-    // No triage, no browser, no recall: this agent plays games.
-    forbidden: [plugin("triage"), plugin("browser"), plugin("recall")],
+    // No triage, no browser, no recall: this agent plays games. And no `slides`,
+    // which is reactive's own — it shares the `BROWSER` binding with the browser
+    // plugin, so a stray import would drag both in here.
+    forbidden: [
+      plugin("triage"),
+      plugin("browser"),
+      plugin("recall"),
+      local("reactive", "slides")
+    ],
     maxBytes: 3_300_000
   }
 ];

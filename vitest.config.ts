@@ -28,6 +28,9 @@ import {
 process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
 process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
 process.env.ARC_API_KEY ??= "test-key";
+// The `slides` plugin declares this, so a runtime built with the whole `env`
+// asserts it — including in specs that only care about something else.
+process.env.PUBLIC_BASE_URL ??= "https://agent.example.test";
 
 export default defineConfig({
   resolve: {

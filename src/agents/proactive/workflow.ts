@@ -54,7 +54,13 @@ export interface NotifyTaskParams {
  * states they exist to catch.
  */
 export interface NotifyTaskDeps {
-  /** Route to the agent DO for the verified caller. */
+  /**
+   * Route to the agent DO for the verified caller.
+   *
+   * Called **once per step body**, not once per run — see {@link runNotifyTask}
+   * — so it must stay a cheap pure lookup: a namespace `get`, nothing cached and
+   * nothing awaited.
+   */
   resolveAgent: (
     identity: GatewayIdentity
   ) => DurableObjectStub<ProactiveAgent>;
@@ -83,20 +89,39 @@ export class NotifyTaskWorkflow extends WorkflowEntrypoint<
  * `WorkflowEntrypoint` outside the runtime). Reads env via the module-level
  * `cloudflare:workers` import rather than a parameter. Steps are named so retries
  * are durable and idempotent.
+ *
+ * **Every step body resolves its own stub.** A Durable Object stub is a live
+ * connection, not a durable address, and a broken one stays broken: once the
+ * runtime severs it — a deploy replacing the object's code is the ordinary way —
+ * every later call on that same stub rejects with the reason it broke, forever.
+ * It never reconnects. Only a new stub from the namespace does.
+ *
+ * A Workflow is exactly where that matters, because it is the one caller that
+ * outlives the object it is calling. Hoisting `resolveAgent` above the first
+ * step puts one stub in a closure that every retry shares, so a single eviction
+ * poisons the whole run: each retry re-enters the body, calls the same dead
+ * connection, and fails in microseconds no matter how long the backoff waited.
+ * The retries look like they ran. Nothing ran.
+ *
+ * That is not hypothetical. The same line in the round loop cost a task in
+ * production — a deploy landed mid-turn, and every retry plus the failure
+ * handler behind them died on the same severed stub, so the gateway received no
+ * callback at all. `@loopingai/core`'s `runHandleTask` fixed it there; this loop
+ * is a deliberate second copy, so it carries the fix itself.
  */
 export async function runNotifyTask(
   p: NotifyTaskParams,
   step: WorkflowStep,
   deps: NotifyTaskDeps
 ): Promise<void> {
-  const stub = deps.resolveAgent(p.identity);
+  const agent = () => deps.resolveAgent(p.identity);
 
   // A Task canceled before this workflow got going stops here, before a single
   // model call is billed. `markWorking` reports the cancellation itself rather
   // than being probed for it, so there is no window between asking and acting.
   const started = await step.do(
     "working",
-    async () => (await stub.markWorking(p.taskId)) === "ok"
+    async () => (await agent().markWorking(p.taskId)) === "ok"
   );
   if (!started) return;
 
@@ -105,7 +130,7 @@ export async function runNotifyTask(
   // fault. The push context lets the DO stream intermediate `working` callbacks
   // live during generation; this step returns only how the turn ended.
   const outcome = await step.do("generate", async () => {
-    const result = await stub.converse(p.text, p.identity, {
+    const result = await agent().converse(p.text, p.identity, {
       taskId: p.taskId,
       contextId: p.contextId,
       pushUrl: p.pushUrl,
@@ -140,7 +165,7 @@ export async function runNotifyTask(
   // step and `notify` — in which a `CancelTask` lands and the gateway still
   // receives a `completed` callback. Keying the notify on "did the write apply"
   // closes it.
-  const saved = await step.do("complete", async () => stub.saveTask(task));
+  const saved = await step.do("complete", async () => agent().saveTask(task));
   if (!saved) return;
 
   // Notify the gateway: a card-key-signed callback POST. Retried by the step on a

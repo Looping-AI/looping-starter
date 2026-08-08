@@ -60,6 +60,22 @@ export const manifest: AgentManifest = {
       inputModes: [],
       outputModes: [],
       securityRequirements: []
+    },
+    {
+      id: "slides",
+      name: "Design slide decks",
+      description:
+        "Design a slide deck, render it to PDF, and return a link to it — then revise that same deck " +
+        "on later messages rather than starting over.",
+      tags: ["slides", "presentation", "pdf"],
+      examples: [],
+      // The reply is still plain text: the deck is delivered as a URL inside it,
+      // not as a file part. Core's A2A parts are text-only by construction
+      // (`PlainPart.content` is `{$case:"text"}`), so advertising a PDF output
+      // mode here would promise something the protocol surface cannot carry.
+      inputModes: [],
+      outputModes: [],
+      securityRequirements: []
     }
   ]
 };

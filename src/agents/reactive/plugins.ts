@@ -2,9 +2,10 @@ import type { AgentPlugin } from "@loopingai/core";
 import { browser } from "@loopingai/plugins/browser";
 import { recall } from "@loopingai/plugins/recall";
 import { workspace } from "@loopingai/plugins/workspace";
-import { RECALL } from "@/config";
+import { RECALL, SLIDES } from "@/config";
 import type { PluginHost } from "@loopingai/core/host";
 import { general } from "./general";
+import { slides } from "./slides";
 
 /**
  * The one file you edit to add or remove a capability for this agent.
@@ -26,6 +27,25 @@ export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
 
   // Read web pages. Requires the `BROWSER` binding and a paid Workers plan.
   browser({ binding: host.env.BROWSER }),
+
+  // Design slide decks, render them to PDF, and deliver a link. Written in this
+  // repo rather than installed — like `general` above — because a recipe must
+  // declare its own soul, and what a deck should look like is this agent's
+  // opinion. Shares the `BROWSER` binding: rendering is `browserPdf` over
+  // self-contained HTML, so there is no slides library in the bundle.
+  slides({
+    bucket: host.env.BUCKET,
+    browser: host.env.BROWSER,
+    storage: host.storage,
+    baseUrl: host.env.PUBLIC_BASE_URL,
+    // For `deck_review`'s own vision-model call — the deck's only reviewer, and
+    // necessarily a plugin-owned call: the round loop's primary model is
+    // text-only. The gateway id is the host's resolved one, so review calls sit
+    // beside the agent's in one gateway.
+    ai: host.env.AI,
+    aiGatewayId: host.aiGatewayId,
+    ...SLIDES
+  }),
 
   // The durable file store behind every subagent execution's workspace, plus
   // tools over it. At most one installed plugin may back a workspace; drop this

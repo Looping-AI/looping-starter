@@ -32,7 +32,7 @@
   "dependencies": {
     "@a2a-js/sdk": "^1.0.1",
     "@cloudflare/shell": "0.4.3",
-    "@loopingai/core": "^0.5.0",
+    "@loopingai/core": "^0.5.1",
     "@loopingai/plugins": "^0.3.0",
     "agents": "^0.20.1",
     "ai": "^7.0.52",

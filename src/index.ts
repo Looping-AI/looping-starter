@@ -4,6 +4,7 @@ import { hostManifest } from "./host-manifest";
 import { reactive } from "./agents/reactive/definition";
 import { proactive } from "./agents/proactive/definition";
 import { arcPlayer } from "./agents/arc-player/definition";
+import { serveDeck } from "./agents/reactive/slides/route";
 
 // Durable Objects and Workflows must be exported from the Worker entry so the
 // runtime can resolve them by class name. `ReactiveSubagent` / `ArcPlayerSubagent`
@@ -61,9 +62,27 @@ export { ArcHandleTaskWorkflow } from "./agents/arc-player/workflow";
  * against the tenant the request addressed. That is a real boundary: it is
  * cryptographic, and it holds even though all three share an audience.
  */
+/**
+ * The A2A surface: three routes, and the only thing a gateway ever talks to.
+ * A plain `(request, env) => Promise<Response>`, so it composes.
+ */
+const a2a = createA2AWorker<Env>({
+  manifest: hostManifest,
+  agents: [reactive, proactive, arcPlayer]
+});
+
+/**
+ * One route sits in front of it: `GET /d/<deckId>.pdf`, which serves a deck the
+ * reactive agent rendered.
+ *
+ * It is a *public* route by design — the link is handed to a Slack user, who
+ * opens it in a browser with no gateway token — so it cannot live behind the A2A
+ * handler's authentication. `serveDeck` returns `null` for anything it does not
+ * recognise, so A2A is reached unchanged and the ordering is not load-bearing in
+ * either direction. See `agents/reactive/slides/route.ts` for what authorizes it.
+ */
 export default {
-  fetch: createA2AWorker<Env>({
-    manifest: hostManifest,
-    agents: [reactive, proactive, arcPlayer]
-  })
+  async fetch(request, env) {
+    return (await serveDeck(request, env.BUCKET)) ?? a2a(request, env);
+  }
 } satisfies ExportedHandler<Env>;

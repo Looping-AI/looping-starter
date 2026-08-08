@@ -162,3 +162,46 @@ export const TRIAGE = {
   historyMessages: 12,
   messageMaxChars: 500
 } as const;
+
+/**
+ * The reactive agent's `slides` plugin tuning.
+ *
+ * **Two model decisions live here, and they are opposites.** The distinction is
+ * whose call it is:
+ *
+ * - **Deck authoring names no model, and cannot.** It happens inside core's
+ *   recipe runner, and a recipe has no field to state a model with —
+ *   deliberately; `validateRecipe` stamps the host's own pair onto every
+ *   execution. So decks are designed by `MODEL` above, like every other subtask.
+ * - **`reviewModelId` is legitimate**, for the same reason `TRIAGE.modelId` is:
+ *   the visual review is a `generateText` call the *plugin itself* makes, so
+ *   nothing about it goes through the runner.
+ *
+ * **`@cf/moonshotai/kimi-k2.7-code` because it has vision**, which is the whole
+ * requirement — the primary `@cf/zai-org/glm-5.2` is text-only and physically
+ * cannot look at a slide. It is already this agent's fallback, so reviewing adds
+ * no new model surface. Alternatives if quality disappoints:
+ * `@cf/meta/llama-4-scout-17b-16e-instruct` (natively multimodal) or
+ * `@cf/mistralai/mistral-small-3.1-24b-instruct`. Whatever replaces it **must**
+ * accept image input, or every review silently becomes an opinion about nothing.
+ *
+ * `maxSlides` is a budget as much as a limit — every slide is several `deck_apply`
+ * ops, and `SLIDES_RECIPE`'s turn ceiling is what a deck of this size fits in.
+ * Raising one without the other produces decks that run out of turns half-built.
+ *
+ * `maxReviewSlides` bounds a *different* cost: each reviewed slide is one Browser
+ * Rendering screenshot, so it is the latency of `deck_review`, not its token bill.
+ *
+ * `reviewMaxOutputTokens` is deliberately generous. At 700 it was clipping real
+ * reviews mid-sentence — three of six in one observed run stopped exactly at the
+ * ceiling — which bills the same tokens as a whole critique and delivers a
+ * finding that breaks off before saying what to fix. Keeping a review short is
+ * the prompt's job (`REVIEW_RULES`), not the ceiling's; the ceiling only decides
+ * whether a long one arrives intact. Unused headroom is never billed.
+ */
+export const SLIDES = {
+  maxSlides: 20,
+  reviewModelId: "@cf/moonshotai/kimi-k2.7-code",
+  maxReviewSlides: 8,
+  reviewMaxOutputTokens: 5_000
+} as const;

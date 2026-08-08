@@ -53,8 +53,17 @@ Register each agent with your gateway using the **same endpoint** and its own
 `/a2a` is core's default, not a requirement — see [Where the endpoints
 live](#where-the-endpoints-live). Register whatever path this deployment actually serves.
 
-> **Browser Rendering needs a paid Workers plan.** On the free tier, remove `browser()`
-> from the agents' `plugins.ts` and the `browser` binding from `wrangler.jsonc`.
+> **Browser Rendering needs a paid Workers plan.** Two plugins use it: `browser()` reads
+> web pages with it, and `slides()` renders decks to PDF with it. On the free tier, remove
+> **both** from `src/agents/reactive/plugins.ts` (and `browser()` from arc-player's), then
+> the `browser` binding from `wrangler.jsonc`. Dropping only one leaves the binding
+> required.
+
+> **`slides()` also needs an R2 bucket and your public origin.** Create the bucket with
+> `wrangler r2 bucket create looping-files`, and set `PUBLIC_BASE_URL` to the origin this
+> Worker is deployed at (`wrangler secret put PUBLIC_BASE_URL` in production, `.dev.vars`
+> locally). That is what deck links are built from, and a Durable Object has no request to
+> read an origin off.
 
 ---
 
@@ -204,6 +213,12 @@ export const plugins = (host: PluginHost): AgentPlugin[] => [
     fallbackModelId: host.fallbackModelId
   }),
   browser({ binding: host.env.BROWSER }),
+  slides({
+    bucket: host.env.BUCKET,
+    browser: host.env.BROWSER,
+    storage: host.storage,
+    baseUrl: host.env.PUBLIC_BASE_URL
+  }),
   workspace(),
   recall({
     ai: host.env.AI,
@@ -283,9 +298,9 @@ and esbuild's **metafile** — the exact list of modules in the graph, not a str
 is checked for plugins that agent does not install:
 
 ```
-✓ reactive: 3370 KiB (ceiling 3613 KiB), 465 modules, no cross-agent plugin
-✓ proactive: 1557 KiB (ceiling 1709 KiB), 449 modules, no cross-agent plugin
-✓ arc-player: 2866 KiB (ceiling 3223 KiB), 454 modules, no cross-agent plugin
+✓ reactive: 3433 KiB (ceiling 3613 KiB), 482 modules, no cross-agent plugin
+✓ proactive: 1558 KiB (ceiling 1709 KiB), 454 modules, no cross-agent plugin
+✓ arc-player: 2865 KiB (ceiling 3223 KiB), 459 modules, no cross-agent plugin
 ```
 
 Proactive's `forbidden` list carries `@loopingai/core/dist/round/` as well as the
@@ -364,7 +379,7 @@ src/
   config.ts             ← model ids, budgets, limits (values; core owns the shapes)
   round-policy.ts       ← the round contract + user-facing copy (core ships no prompt copy)
   agents/
-    reactive/           ← definition, plugins, soul, manifest, the `general` plugin
+    reactive/           ← definition, plugins, soul, manifest, the `general` and `slides` plugins
     proactive/          ← its own loop + workflow, plus the same five files
     arc-player/         ← definition, plugins, soul, manifest, thin subclasses
 test/

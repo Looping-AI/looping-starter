@@ -20,9 +20,7 @@
   "observability": {
     "enabled": true
   },
-
   // --- shared: required by core itself -------------------------------------
-
   // Workers AI backs every agent's tool loop (via AI Gateway). `remote: true`
   // reflects reality — Workers AI has no local execution mode and always hits
   // remote resources — and suppresses wrangler's per-run warning. In tests the
@@ -32,14 +30,12 @@
     "binding": "AI",
     "remote": true
   },
-
   // --- plugin-required bindings --------------------------------------------
   // A plugin cannot add its own wrangler binding, which is the whole reason it
   // declares `requires`. Each of these is asserted at DO start by
   // `createAgentRuntime({ env })`, so a missing one fails with a sentence naming
   // the plugin rather than at the first tool call, inside a request someone is
   // waiting on.
-
   // `@loopingai/plugins/browser` — used by reactive and arc-player.
   // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free
   // tier. `remote: true` is required for Quick Actions under `wrangler dev`.
@@ -47,7 +43,6 @@
     "binding": "BROWSER",
     "remote": true
   },
-
   // `@loopingai/plugins/recall` — used by reactive and proactive. Must be a
   // 1024-dim cosine index to match the `@cf/baai/bge-m3` embedding model.
   // Vectorize has no local mode, so tests inject a fake index.
@@ -59,7 +54,17 @@
       "remote": true
     }
   ],
-
+  // The reactive agent's `slides` plugin. One general-purpose bucket rather than
+  // a per-feature one: decks live under the `decks/` prefix, and the next thing
+  // this agent produces a file for gets its own prefix instead of its own
+  // bucket. Miniflare simulates R2 locally, so tests need no extra config.
+  //   wrangler r2 bucket create looping-files
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "looping-files"
+    }
+  ],
   // --- the agents ----------------------------------------------------------
   // One Durable Object class per agent: each is keyed by the verified caller
   // (`identity.key`), holding that caller's SQLite-backed Session — continuous
@@ -72,9 +77,18 @@
   // test-only binding — see the comment in vitest.config.ts.
   "durable_objects": {
     "bindings": [
-      { "class_name": "ReactiveAgent", "name": "ReactiveAgent" },
-      { "class_name": "ProactiveAgent", "name": "ProactiveAgent" },
-      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" }
+      {
+        "class_name": "ReactiveAgent",
+        "name": "ReactiveAgent"
+      },
+      {
+        "class_name": "ProactiveAgent",
+        "name": "ProactiveAgent"
+      },
+      {
+        "class_name": "ArcPlayerAgent",
+        "name": "ArcPlayerAgent"
+      }
     ]
   },
   "migrations": [
@@ -87,7 +101,6 @@
       ]
     }
   ],
-
   // Async A2A (accept + notify): the Worker accepts a turn synchronously and
   // hands generation plus the gateway push-notification callback to a durable
   // Workflow. Reactive and arc-player run the same round loop over different
@@ -109,7 +122,6 @@
       "class_name": "NotifyTaskWorkflow"
     }
   ],
-
   // --- secrets --------------------------------------------------------------
   // One signing key for the deployment, not one per agent. The card is
   // per-origin (a well-known URI is per-authority), so the key a gateway pins is
@@ -121,8 +133,16 @@
   // checks against the tenant each request addresses.
   //
   // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
-  // from — a property of the deployment, like the key.
+  // from — a property of the deployment, like the key. `PUBLIC_BASE_URL` is the
+  // same kind of thing: not confidential, but per-environment, so it is set with
+  // `wrangler secret put` rather than committed as a `var` that is wrong for
+  // every deployment except the one whose hostname was checked in.
   "secrets": {
-    "required": ["A2A_SIGNING_KEY", "GATEWAY_ORIGINS", "ARC_API_KEY"]
+    "required": [
+      "A2A_SIGNING_KEY",
+      "GATEWAY_ORIGINS",
+      "ARC_API_KEY",
+      "PUBLIC_BASE_URL"
+    ]
   }
 }
