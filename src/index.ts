@@ -4,6 +4,7 @@ import { hostManifest } from "./host-manifest";
 import { reactive } from "./agents/reactive/definition";
 import { proactive } from "./agents/proactive/definition";
 import { arcPlayer } from "./agents/arc-player/definition";
+import { coder } from "./agents/coder/definition";
 
 // Durable Objects and Workflows must be exported from the Worker entry so the
 // runtime can resolve them by class name. `ReactiveSubagent` / `ArcPlayerSubagent`
@@ -17,6 +18,22 @@ export { NotifyTaskWorkflow } from "./agents/proactive/workflow";
 export { ArcPlayerAgent } from "./agents/arc-player/agent";
 export { ArcPlayerSubagent } from "./agents/arc-player/subagent";
 export { ArcHandleTaskWorkflow } from "./agents/arc-player/workflow";
+
+export { CoderAgent } from "./agents/coder/agent";
+export { CoderSubagent } from "./agents/coder/subagent";
+export { CoderWorkflow } from "./agents/coder/workflow";
+
+// The coder's workspace: a Durable Object holding one repository's filesystem
+// in SQLite, paired with the container that mounts it. Only the coder uses it —
+// `verify:isolation` keeps it out of the other three bundles.
+export { CoderWorkspaceDO } from "./agents/coder/workspace-do";
+
+// Not one of our classes, and **not optional**. `CloudflareContainerBackend`
+// builds the container's egress loopback with `ctx.exports.WorkspaceProxy`, so
+// the class has to be in this module's graph under that exact name. Nothing
+// imports it and no binding names it, which makes it look like dead code —
+// deleting it compiles cleanly and breaks every container at runtime.
+export { WorkspaceProxy } from "@cloudflare/computer";
 
 /**
  * One Worker, three agents, addressed by A2A `tenant`.
@@ -64,6 +81,6 @@ export { ArcHandleTaskWorkflow } from "./agents/arc-player/workflow";
 export default {
   fetch: createA2AWorker<Env>({
     manifest: hostManifest,
-    agents: [reactive, proactive, arcPlayer]
+    agents: [reactive, proactive, arcPlayer, coder]
   })
 } satisfies ExportedHandler<Env>;

@@ -25,3 +25,87 @@ GATEWAY_ORIGINS=
 # from the ARC-AGI-3 web console. Required only by the arc-player agent
 # (@loopingai/plugins/arc-agi declares it). Delete this line if you remove it.
 ARC_API_KEY=
+
+# There is NO Claude credential in this file, deliberately.
+#
+# The coder reaches Claude through an AI Gateway *custom provider* whose origin
+# is the sibling `looping-anthropic-proxy` Worker, and that Worker is what holds
+# the Anthropic tokens (ANTHROPIC_TOKEN_PRIMARY / _FALLBACK, both from
+# `claude setup-token`). This deployment authenticates to it with a 120-second
+# token it signs using A2A_SIGNING_KEY above — so nothing here is worth stealing
+# for Claude access, rotating the Claude token never touches this Worker, and a
+# coder container still never sees one.
+#
+# The route is a custom provider rather than the gateway's provider-native
+# `/anthropic` path because that path is provider-aware: the gateway knows
+# Anthropic's auth scheme and can supply the credential itself through BYOK or
+# Unified Billing, so the token you send is not necessarily the one that ends up
+# doing the work. A custom provider forwards `Authorization` untouched.
+#
+# What pairs this Worker with that one is the two origins below, and both must
+# agree with the proxy's own or it refuses the request (surfacing as
+# `proxy-credential`, not as a Claude problem):
+#
+#   SELF_ORIGIN               must appear in the proxy's CALLER_ORIGINS
+#   ANTHROPIC_PROXY_AUDIENCE  must equal the proxy's PROXY_AUDIENCE
+
+# SELF_ORIGIN: this deployment's own public origin, e.g.
+# https://looping-starter.example.workers.dev — under `wrangler dev`, whatever
+# origin you actually serve on.
+#
+# It is the `iss` of the token the coder mints for the proxy and the base of the
+# `jku` pointing at the JWKS the proxy verifies against, so it must be the origin
+# that really serves /.well-known/jwks.json.
+#
+# Not a traditional secret — an origin is public — but per-deployment, so it is
+# kept out of wrangler.jsonc for the same reason GATEWAY_ORIGINS is: production,
+# staging and a fork each need a different one, with no code change and no
+# example value inherited by default.
+SELF_ORIGIN=
+
+# ANTHROPIC_PROXY_AUDIENCE: the proxy's public URL, used as the token's `aud`.
+# Bounding the audience is what makes a captured token useless against any other
+# service that trusts this same signing key. Per-deployment for the same reason
+# as SELF_ORIGIN above.
+ANTHROPIC_PROXY_AUDIENCE=
+
+# AI_GATEWAY_TOKEN: authenticates this Worker to AI Gateway itself — a different
+# authority from the Anthropic credentials, and a different token again from the
+# proxy one described above. Three in total between a round and Claude.
+#
+# Needed because the coder is the only agent that calls a gateway URL directly;
+# the other three reach it through the `AI` binding, which the platform
+# authenticates. With Authenticated Gateway enabled (AI Gateway → your gateway →
+# Settings), a request without this is rejected at the door: a 401 that Anthropic
+# never sees and the gateway never logs, which looks exactly like an expired
+# Claude token.
+#
+# Mint it at AI Gateway → your gateway → Settings → Create authentication token
+# (it needs `AI Gateway Run`), then `npx wrangler secret put AI_GATEWAY_TOKEN`.
+#
+# Required only by the coder agent. Delete this line if you remove it, or leave
+# it empty if your gateway has authentication turned off.
+AI_GATEWAY_TOKEN=
+
+# GITHUB_TOKEN: used by @loopingai/plugins/repo to clone, push a work branch and
+# open the pull request. Needs `contents: write` and `pull-requests: write` on
+# the repositories the coder is pointed at — a fine-grained PAT scoped to those
+# repos is the right shape, not a classic token with org-wide access.
+#
+# It never enters the container as a command argument, it is offered only to the
+# hosts on the repo plugin's allowlist (github.com by default) — a clone URL
+# pointing anywhere else is refused before git runs — and pull requests are
+# opened from the Worker rather than the sandbox, so the container never holds a
+# credential that can write to the repository through the API.
+#
+# Required only by the coder agent. Delete this line if you remove it.
+GITHUB_TOKEN=
+
+# There is deliberately nothing else here.
+#
+# `ENVIRONMENT` used to live at the bottom of this file, selecting between
+# @cloudflare/sandbox's two backup paths (presigned URLs in production, a direct
+# R2 binding under `wrangler dev`). The coder no longer snapshots its container
+# to R2 at all — that path required R2 S3-API credentials a Workers binding
+# cannot supply, and failed on every task in production — so the var had no
+# reader and was removed along with it. See wrangler.jsonc.

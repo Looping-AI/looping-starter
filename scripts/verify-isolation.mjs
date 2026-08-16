@@ -48,7 +48,14 @@ const AGENTS = [
       "src/agents/reactive/workflow.ts",
       "src/agents/reactive/subagent.ts"
     ],
-    forbidden: [plugin("arc-agi"), plugin("triage")],
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("computer"),
+      plugin("repo"),
+      "@cloudflare/computer",
+      "@anthropic-ai/sdk"
+    ],
     maxBytes: 3_700_000
   },
   {
@@ -69,7 +76,11 @@ const AGENTS = [
     forbidden: [
       plugin("arc-agi"),
       plugin("workspace"),
+      plugin("computer"),
+      plugin("repo"),
       "@cloudflare/shell",
+      "@cloudflare/computer",
+      "@anthropic-ai/sdk",
       core("round")
     ],
     maxBytes: 1_750_000
@@ -81,8 +92,41 @@ const AGENTS = [
       "src/agents/arc-player/subagent.ts"
     ],
     // No triage, no browser, no recall: this agent plays games.
-    forbidden: [plugin("triage"), plugin("browser"), plugin("recall")],
+    forbidden: [
+      plugin("triage"),
+      plugin("browser"),
+      plugin("recall"),
+      plugin("computer"),
+      plugin("repo"),
+      "@cloudflare/computer",
+      "@anthropic-ai/sdk"
+    ],
     maxBytes: 3_300_000
+  },
+  {
+    name: "coder",
+    entries: [
+      "src/agents/coder/agent.ts",
+      "src/agents/coder/workflow.ts",
+      "src/agents/coder/subagent.ts"
+    ],
+    // No arc-agi, no triage, no recall — and no `/workspace`, which is the one
+    // worth stating: the computer plugin is this agent's filesystem, and having
+    // both would hand the model two unrelated ones with no way to tell from a
+    // path which it is addressing.
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("recall"),
+      plugin("workspace"),
+      "@cloudflare/shell"
+    ],
+    // Higher than its siblings because it is the only agent carrying a container
+    // client and a second model provider — but still a real ceiling, ~8% over
+    // the measured size, the same headroom the others run with. Raise it
+    // deliberately, with the dependency bump that caused it, never to make a red
+    // build go green.
+    maxBytes: 4_300_000
   }
 ];
 

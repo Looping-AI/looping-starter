@@ -18,8 +18,20 @@
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    // Traces, not just logs. The coder's workspace passes
+    // `createCloudflareObserver({ tracing })` to its `Workspace`, which emits a
+    // span per sync push, sync pull, exec spawn and filesystem operation. Those
+    // are the only view into how long a container→host sync actually takes, and
+    // without this flag `tracing` is undefined and the observer silently
+    // degrades to a no-op.
+    "traces": {
+      "enabled": true
+    }
   },
+
+  // No `vars`. The two origins pairing this Worker with the Anthropic proxy are
+  // secrets instead — see the bottom of this file for why.
 
   // --- shared: required by core itself -------------------------------------
 
@@ -39,6 +51,62 @@
   // `createAgentRuntime({ env })`, so a missing one fails with a sentence naming
   // the plugin rather than at the first tool call, inside a request someone is
   // waiting on.
+
+  // The coder's workspace container, running `computerd` (see Dockerfile).
+  // Requires a PAID Workers plan.
+  //
+  // `class_name` is the Durable Object that *owns* the container, one-to-one:
+  // `@cloudflare/computer` pairs each object's SQLite filesystem with exactly
+  // one container, which is what makes "one workspace per repository" a
+  // structural property rather than a convention.
+  //
+  // `instance_type` is deliberately not "lite": that is the getting-started
+  // default and cannot build a real project.
+  //
+  // It was standard-1 (1/2 vCPU, 4 GiB), whose comment said "the CPU is the
+  // exposure here … revisit against the step-1 measurement rather than guessing".
+  // The measurement arrived on 2026-08-11 and confirmed it: a one-line README
+  // change took 59 minutes, of which 52 were inside `executeChunk` at **0.0% of
+  // Worker CPU** — the Worker was asleep awaiting this container the whole time.
+  // `npm run check` on the target repo is five sequential tools including two full
+  // `tsc` runs; it is recorded at 28 s in `install.ts` and was observed taking
+  // 3-5 minutes here.
+  //
+  // standard-2 is 1 vCPU, 6 GiB, 12 GB disk — double the CPU. It is headroom
+  // rather than a cure: the same run also lost ten minutes to a step timeout and
+  // ran every model call on a rate-limited primary, and both of those are fixed
+  // elsewhere (see `platform.ts` and `config.ts`). If the per-exec timing added to
+  // `workspace-do.ts` still shows the gate above ~3 minutes, standard-3 (2 vCPU,
+  // 8 GiB) is the next step, and that measurement is what should justify it.
+  //
+  // Cap `max_instances` — a container bills by the second, and the coder now
+  // keys one per caller *per repository*. Note the ceiling scales with the size:
+  // this line is now five standard-2s, not five standard-1s.
+  "containers": [
+    {
+      "class_name": "CoderWorkspaceDO",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 5
+    }
+  ],
+
+  // There is deliberately **no R2 bucket here**, and it is worth saying why,
+  // because a `BACKUP_BUCKET` binding looks like an obvious thing to add.
+  //
+  // The coder used to snapshot its container's `/workspace` to R2 between tasks
+  // so a follow-up skipped the clone and the install. It never worked once in
+  // production: `@cloudflare/sandbox` mounts that archive **inside the
+  // container** over s3fs, so it needs R2 S3-API credentials
+  // (`R2_ACCESS_KEY_ID` and friends) that a Workers R2 binding cannot supply —
+  // the binding has no presign API. Every task logged `InvalidBackupConfigError`.
+  //
+  // Nothing replaces it, because nothing needs to: the checkout now lives in the
+  // workspace object's own SQLite storage, which survives the container and
+  // costs no credential at all. `node_modules` does not — it stays in the
+  // container and is reinstalled when one starts — but that is reproducible from
+  // the lockfile in a few minutes, which is exactly what a snapshot was ever
+  // worth. See `src/agents/coder/install.ts`.
 
   // `@loopingai/plugins/browser` — used by reactive and arc-player.
   // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free
@@ -74,7 +142,14 @@
     "bindings": [
       { "class_name": "ReactiveAgent", "name": "ReactiveAgent" },
       { "class_name": "ProactiveAgent", "name": "ProactiveAgent" },
-      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" }
+      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" },
+      { "class_name": "CoderAgent", "name": "CoderAgent" },
+
+      // Not an agent — the coder's workspace. One object per caller per
+      // repository, holding that checkout's filesystem in SQLite and owning the
+      // container that mounts it. Addressed by `idFromName`, never by the
+      // caller alone; see `workspaceName` in `src/agents/coder/workspace-do.ts`.
+      { "class_name": "CoderWorkspaceDO", "name": "CODER_WORKSPACE" }
     ]
   },
   "migrations": [
@@ -85,6 +160,35 @@
         "ProactiveAgent",
         "ArcPlayerAgent"
       ]
+    },
+    {
+      // A NEW tag, not an addition to "v1". Migrations are applied by tag and
+      // never re-applied, so a class appended to an already-deployed tag is
+      // simply never created — and the failure surfaces at runtime as a missing
+      // Durable Object, far from this file. `agent:new` appends to the last tag
+      // because it cannot know whether you have deployed; when you have, split
+      // it out like this.
+      "tag": "v2",
+      "new_sqlite_classes": ["CoderAgent", "Sandbox"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["CoderWorkspaceDO"]
+    },
+    {
+      // Its own tag, and this is the second time that rule has earned its
+      // comment. `deleted_classes` was first appended to "v3" — which was
+      // already deployed, so it was simply never applied, and the deploy failed
+      // with "New version of script does not export class 'Sandbox' which is
+      // depended on by existing Durable Objects". A tag is applied once, ever.
+      //
+      // `Sandbox` is gone from the code, and removing a class without saying so
+      // reclaims nothing: it leaves every object that class created holding its
+      // storage, unreachable and still billed. This is the line that frees them,
+      // and it is irreversible — those container filesystems were never the
+      // source of truth for anything, which was the whole problem with them.
+      "tag": "v4",
+      "deleted_classes": ["Sandbox"]
     }
   ],
 
@@ -107,6 +211,11 @@
       "binding": "NOTIFY_WORKFLOW",
       "name": "notify-task",
       "class_name": "NotifyTaskWorkflow"
+    },
+    {
+      "binding": "CODER_WORKFLOW",
+      "name": "coder",
+      "class_name": "CoderWorkflow"
     }
   ],
 
@@ -122,7 +231,50 @@
   //
   // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
   // from — a property of the deployment, like the key.
+  //
+  // `SELF_ORIGIN` and `ANTHROPIC_PROXY_AUDIENCE` are listed here too, and they
+  // are the odd pair: both are public strings — they are origins — so nothing is
+  // being hidden. What they are is *per-deployment*. The origin naming this
+  // Worker and the one naming its proxy differ between production, staging and a
+  // fork, so a value committed to a public repository is a value every
+  // environment inherits and the wrong one ships by default. Configured rather
+  // than committed, they change per environment with no code change. The proxy
+  // treats its own half of the pair (`CALLER_ORIGINS`, `PROXY_AUDIENCE`) the
+  // same way.
   "secrets": {
-    "required": ["A2A_SIGNING_KEY", "GATEWAY_ORIGINS", "ARC_API_KEY"]
+    "required": [
+      "A2A_SIGNING_KEY",
+      "GATEWAY_ORIGINS",
+      "ARC_API_KEY",
+      // coder only. `GITHUB_TOKEN` needs contents and pull-request write.
+      //
+      // `SELF_ORIGIN` is this deployment's own public origin: the `iss` of the
+      // token the coder mints for the proxy, and the base of the `jku` pointing
+      // at the JWKS the proxy verifies against — so it must be the origin that
+      // actually serves `/.well-known/jwks.json`, and must appear in the proxy's
+      // `CALLER_ORIGINS` allowlist. `ANTHROPIC_PROXY_AUDIENCE` is the proxy's
+      // public URL, used as the token's `aud`; bounding the audience is what
+      // makes a captured token useless against any other service trusting this
+      // same signing key. A mismatch in either is refused at the proxy and
+      // surfaces as `proxy-credential`, not as a Claude problem.
+      //
+      // **There is no Claude credential here.** It lives in the
+      // `looping-anthropic-proxy` Worker, which is the origin behind the
+      // gateway's custom provider. This Worker authenticates *to that proxy*
+      // with a short-lived token it signs using `A2A_SIGNING_KEY` above — so
+      // rotating the Claude token never touches this deployment, and a
+      // compromise of this Worker yields no Anthropic credential. It also keeps
+      // the existing property that a coder container never sees one.
+      //
+      // `AI_GATEWAY_TOKEN` authenticates this Worker *to the gateway*, a third
+      // authority again distinct from the two above, and needed only because
+      // the coder calls a gateway URL directly. The other three agents go
+      // through the `AI` binding, which the platform authenticates, so they
+      // need nothing here.
+      "SELF_ORIGIN",
+      "ANTHROPIC_PROXY_AUDIENCE",
+      "GITHUB_TOKEN",
+      "AI_GATEWAY_TOKEN"
+    ]
   }
 }

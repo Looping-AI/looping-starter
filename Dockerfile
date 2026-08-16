@@ -1,0 +1,177 @@
+# The coder agent's workspace container.
+#
+# Only the coder builds an image — the other three agents in this Worker never
+# touch one. Cloudflare builds this on `wrangler deploy` from the `containers`
+# block in wrangler.jsonc, always for linux/amd64: wrangler passes `--platform`
+# itself and rejects any other value, so never set one here.
+#
+# The ENTRYPOINT is `computerd`, the workspace daemon from
+# `@cloudflare/computer`. It mounts the Durable Object's SQLite-backed VFS at
+# MOUNT_POINT over FUSE, so every command below sees the same tree the Worker
+# reads and writes — and that tree survives the container, which is the whole
+# reason this image replaced the `@cloudflare/sandbox` one.
+#
+# The tag on the `computerd` stage MUST track the `@cloudflare/computer` version
+# in package.json. The library running in the Worker speaks capnweb to the
+# daemon baked in here; they are released as a pair.
+#
+# Add to this file deliberately. Every layer is image size, image size is
+# container cold start, and cold start is already the slow part of a round.
+
+# A single layer over `scratch` holding one file: the 126 MB SEA binary at
+# /usr/local/bin/computerd. Nothing else is in this image, so it is a staging
+# stage and never a base.
+FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.1.1 AS computerd
+
+# `debian:stable-slim`, matching the upstream reference recipe
+# (examples/container/Dockerfile) exactly — and the base is the load-bearing
+# part of that match, not an incidental one.
+#
+# The obvious simplification is `node:24-slim`, which would drop the nodesource
+# block below. It does not work: `node:24-slim` is Debian **bookworm**, and the
+# FUSE packaging differs between the two releases in a way that decides whether
+# this image can mount anything at all. On trixie, `fuse3` ships
+# `/usr/bin/fusermount` (it took over the diversion, and `fusermount3` alongside
+# it). On bookworm, `fusermount` comes from a separate `fuse` package which
+# **conflicts** with `fuse3`, and `libfuse2t64` does not exist there — the
+# pre-t64 name is `libfuse2`.
+#
+# So a bookworm base needs a different, untested package set for the one
+# component whose failure mode is "the workspace is empty and no command can see
+# the tree". `wrangler dev` cannot catch that either: it has no `/dev/fuse`, so
+# computerd falls back to the userspace shim and a local run proves nothing.
+# Fidelity to the tested set is worth a nodesource block.
+FROM docker.io/debian:stable-slim
+
+# fuse3,     — what computerd needs to mount its VFS. The `libfuse.so.2` the
+# libfuse2t64   binary links is unpacked from inside the SEA at startup, so
+#               these are the mount helper and its runtime, not the library
+#               itself. Straight from the upstream recipe; keep them together.
+# ripgrep    — reading an unfamiliar repo is the first thing the agent does, and
+#               `grep -r` across node_modules is how a round runs out of time.
+#               It matters more here than it did on a real disk: reads go
+#               through FUSE.
+# xxd        — the model reaches for it unprompted to inspect trailing bytes of a
+#               file (`tail -c 200 README.md | xxd`), and it was the *first*
+#               command of several consecutive production runs. Absent, that cost
+#               a turn each time: exit 127, then a retry with `od -c`. It is the
+#               `xxd` package on Debian 13, **not** `vim-common` — the two were
+#               split apart, and vim-common alone leaves no `xxd` on PATH
+#               (verified against debian:stable-slim, 13.6).
+# make,      — node-gyp's prerequisites. Nothing in the looping repos compiles
+# g++,          today (workerd, esbuild and friends all ship prebuilt binaries),
+# python3       but one transitive dependency that does turns an install into
+#               "gyp ERR! find Python", and that is not a failure the agent can
+#               route around: fixing it means an operator rebuilding and
+#               redeploying this image. ~150 MB to delete a class of dead round.
+# git        — the whole delivery path is clone → commit → push.
+#
+# Node 24, not the reference's 22. Every looping repo pins 24 in `.nvmrc` and
+# `engines`, and CI runs `setup-node@v6` with 24. An agent that builds and tests
+# on 22 eventually produces "passed in the sandbox, failed in CI", which is the
+# one result a coding agent must never produce.
+#
+# It is a plain system Node rather than the separate `/opt` prefix the
+# predecessor image used. That prefix existed because the `@cloudflare/sandbox`
+# base ran its own container server on the Node it shipped, and moving it out
+# from under that server broke startup. `computerd` has no such constraint: it
+# is a Node SEA that embeds its own runtime, the `fuse-native` prebuilds and
+# `libfuse` as assets, so the host image needs no Node at all. Everything
+# installed here is for the *agent's* commands, and there is one Node on PATH.
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    fuse3 \
+    libfuse2t64 \
+    git \
+    ripgrep \
+    xxd \
+    make \
+    g++ \
+    python3 \
+  && mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=computerd /usr/local/bin/computerd /usr/local/bin/computerd
+
+# pnpm and yarn on demand, for repos that are not npm ones. A pnpm repo has no
+# package-lock.json, so `npm ci` fails outright there and the install step burns
+# its budget discovering it; corepack ships with Node and honours the repo's own
+# `packageManager` pin, which is exactly what `resolveInstallCommand` keys on.
+#
+# Named managers rather than a bare `corepack enable`, which also shims `npm`:
+# a shimmed npm in a repo with no `packageManager` field resolves through
+# corepack's last-known-good version, putting a network round trip in front of
+# every `npm ci`. Guarded because corepack is on its way out of Node, and a
+# missing nice-to-have must not fail the image build.
+RUN if command -v corepack > /dev/null; then \
+      corepack enable pnpm yarn; \
+    else \
+      echo "corepack is not bundled with this Node build — skipping pnpm/yarn shims"; \
+    fi
+
+# Fail the BUILD, not round three, if the base image stops delivering the
+# toolchain. npm ignores `engines` unless a repo opts in, so nothing downstream
+# would tell you.
+RUN node -e "const m=Number(process.versions.node.split('.')[0]); if (m < 24) { console.error('this image needs Node >= 24, PATH resolves to ' + process.execPath + ' at ' + process.versions.node); process.exit(1); }" \
+  && node -p "'node ' + process.version + ' at ' + process.execPath" \
+  && npm --version \
+  && git --version \
+  && rg --version | head -n1 \
+  && test -x /usr/local/bin/computerd
+
+# Everything below exists because tool output lands in a model's context window.
+# `sb_exec` truncates to a byte budget, so every byte spent on an ANSI colour
+# code or an npm progress bar is a byte not spent on the error message.
+#
+# CI=1 does double duty: it is also what stops wrangler and friends from
+# blocking on an interactive prompt that nobody is there to answer — a hang,
+# which is a worse failure than an error.
+#
+# HUSKY=0 is the judgement call in this file. An install runs `prepare`, which
+# in this repo family installs git hooks, and looping-gateway's pre-commit hook
+# runs the full `npm run check`. That would turn every `repo_commit` into a
+# multi-minute lint run surfacing as an opaque "commit failed" with the real
+# cause truncated out of the middle of the output. The agent should run
+# `npm run check` deliberately, as its own visible step. Drop this line if you
+# would rather the repo's own gate fire on each commit.
+ENV CI=1 \
+    HUSKY=0 \
+    NO_COLOR=1 \
+    FORCE_COLOR=0 \
+    NPM_CONFIG_FUND=false \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_PROGRESS=false \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    WRANGLER_SEND_METRICS=false \
+    LANG=C.UTF-8
+
+# computerd's own configuration. `CloudflareContainerBackend` passes PORT and
+# MOUNT_POINT in the container env when it starts the container, so these two
+# are defaults for a manual `docker run` rather than load-bearing — but they
+# must agree with the backend's, or a hand-run container answers on a port
+# nothing dials.
+#
+# FUSE_MOUNT=auto is the one that matters, and it is why a single image serves
+# both environments: Cloudflare Containers expose /dev/fuse to the workload, so
+# the real FUSE backend mounts; `wrangler dev` does not, so computerd falls back
+# to a userspace shim. `computerd` logs which one it resolved to at startup —
+# `[info] FUSE_MOUNT=auto resolved to backend=…` — and that log line is the
+# first thing to read when commands cannot see the tree.
+ENV PORT=8080 \
+    MOUNT_POINT=/workspace \
+    FUSE_MOUNT=auto
+EXPOSE 8080
+
+# No WORKDIR, deliberately: computerd mounts the workspace at MOUNT_POINT after
+# it starts, so a build-time WORKDIR /workspace would bake an empty directory
+# that the mount then covers. Every exec passes an explicit cwd.
+ENTRYPOINT ["/usr/local/bin/computerd"]

@@ -1,0 +1,8 @@
+# The build context for ./Dockerfile is this directory — wrangler resolves it as
+# the Dockerfile's parent unless `image_build_context` says otherwise — so every
+# `wrangler deploy` would otherwise hand the daemon ~450 MB of node_modules and
+# dist before running a single instruction.
+#
+# The Dockerfile has no COPY, so the correct context is empty. If you ever add
+# one, un-ignore exactly the paths it needs; do not delete this file.
+*

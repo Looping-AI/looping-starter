@@ -96,6 +96,96 @@ export const ARC_PLAYER_CONFIG: CoreConfigOverrides = {
 };
 
 /**
+ * The coder's models — Claude, not Workers AI.
+ *
+ * The only agent in this Worker that changes provider, and the reason is narrow:
+ * writing code that compiles and passes its own tests is the task where model
+ * quality shows up as a working pull request or a wasted container hour.
+ * `src/agents/coder/models.ts` builds these through `@loopingai/core/anthropic`,
+ * and the agent and its subagent facet both return it from `modelRuntime()`;
+ * nothing else about the round loop changes.
+ *
+ * ## Why the primary is Sonnet and not Opus
+ *
+ * It was `claude-opus-5`, and on 2026-08-11 that was measured costing an hour per
+ * task while never once serving a request.
+ *
+ * `CLAUDE_CODE_OAUTH_TOKEN` comes from `claude setup-token` — a Claude
+ * *subscription* credential, and subscriptions cap Opus separately from and far
+ * more tightly than Sonnet. With that cap spent, every Opus call returned
+ * `429 Wholesale Rate limited` in about 10ms at zero tokens, while the Sonnet call
+ * issued moments later on the same credential succeeded every time. Both the
+ * orchestrator (`[turn] model attempt failed`, rounds 0, 1 and 2) and the
+ * subagents (`[recipe-runner] primary attempt failed, trying fallback`) hit it.
+ *
+ * So the agent was already running entirely on its fallback. Naming Opus bought no
+ * Opus — it bought three doomed retries in front of every single model call.
+ *
+ * **Restoring Opus here is a credential change, not a config change.** It needs a
+ * metered Anthropic API key in place of the subscription token; put the id back
+ * only once that is in place, or this comment will be rewritten a third time.
+ *
+ * ## Why the fallback is also Claude
+ *
+ * `ModelConfig` advises a different vendor and family for the fallback slot, and
+ * that advice is right for every other agent here — a same-family fallback shares
+ * the failure mode you are escaping. It does not apply to this one, for a
+ * mechanical reason and a judgement one. Mechanically, both slots are built by
+ * the same Anthropic runtime, so a Workers AI id in the fallback would not
+ * resolve. And on judgement: a weaker model that quietly finishes a half-written
+ * refactor produces a pull request that looks finished and is not, which is worse
+ * than a failed task. Haiku is the step down, not a different bet.
+ *
+ * The two slots must stay *different*, though. Leaving both on Sonnet would make
+ * the fallback a retry wearing a costume — the exact thing `ModelConfig` warns
+ * against, and the thing the Opus 429s proved the cost of.
+ *
+ * `reasoningEffort` stays inside core's three-value union; the coder actually
+ * runs at `xhigh`, which the agent passes to the Anthropic runtime directly.
+ */
+const CODER_MODEL = {
+  chatModelId: "claude-sonnet-5",
+  fallbackChatModelId: "claude-haiku-4-5-20251001",
+  aiGatewayId: "default",
+  // A custom provider, not the provider-native `anthropic` path. The gateway
+  // forwards `Authorization` untouched to a custom provider and injects nothing,
+  // which is what keeps the credential ours; the native path can supply its own
+  // via BYOK / Unified Billing. The slug must match the one registered on the
+  // account (`npm run cf -- provider:create`) minus its mandatory `custom-`
+  // prefix, which belongs in the request URL.
+  aiGatewayProvider: "custom-looping-anthropic",
+  // Generous: a round that writes a file and a test spends output tokens on both,
+  // and a truncated patch reads as a finished one.
+  maxOutputTokens: 32_000,
+  reasoningEffort: "high"
+} as const;
+
+/**
+ * The coder: long rounds, few subtasks, and a real container underneath.
+ *
+ * Every budget here is larger than reactive's except `maxSubtasks`, and that
+ * asymmetry is the point. A coding round is slow — a container boot, an install,
+ * a test suite — so turns and wall clock have to be generous or the agent is
+ * killed mid-build. But coding subtasks are *heavy*, not numerous: eight parallel
+ * subagents editing one checkout is a merge conflict, not fan-out.
+ *
+ * `toolOutputWindow` is wider than reactive's because a build log the model can
+ * no longer see is a build log it will run again.
+ */
+export const CODER_CONFIG: CoreConfigOverrides = {
+  model: CODER_MODEL,
+  mainAgentLimits: { maxTurns: 60, maxWallMs: 3 * 60 * 60_000 },
+  subagentLimits: { maxTurns: 80, maxWallMs: 90 * 60_000 },
+  toolOutputWindow: 6,
+  maxSubtasks: 4,
+  session: {
+    memoryMaxTokens: 2_000,
+    compactAfterTokens: 60_000,
+    compactTailTokens: 12_000
+  }
+};
+
+/**
  * The proactive agent: single-turn, no delegation, so most of the delegation
  * config above is inert for it and left at core's baseline.
  *

@@ -28,6 +28,25 @@ import {
 process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
 process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
 process.env.ARC_API_KEY ??= "test-key";
+// The coder's two. Never real: nothing in the suite reaches Claude, the gateway
+// or GitHub — the adapter is unit-tested in core against a fake client, and the
+// repo tools against an injected `exec`. These exist only so `secrets.required`
+// is satisfied and the pool stops warning.
+//
+// No Claude credential appears here because this Worker no longer holds one:
+// it authenticates to `looping-anthropic-proxy` with a token signed from
+// `A2A_SIGNING_KEY` above, and the proxy holds the Anthropic tokens.
+//
+// `AI_GATEWAY_TOKEN` is a separate authority again: it authenticates this
+// Worker *to* AI Gateway, which is why it is listed on its own.
+process.env.GITHUB_TOKEN ??= "test-token";
+process.env.AI_GATEWAY_TOKEN ??= "test-token";
+// The pair naming this Worker and the proxy it calls. Public strings rather than
+// credentials, but secrets all the same because they are per-deployment, so they
+// are answered here like the rest. Nothing in the suite calls the proxy; these
+// only need to be well-formed origins.
+process.env.SELF_ORIGIN ??= "https://looping-starter.test";
+process.env.ANTHROPIC_PROXY_AUDIENCE ??= "https://proxy.test";
 
 export default defineConfig({
   resolve: {
@@ -61,6 +80,10 @@ export default defineConfig({
           },
           ARC_PLAYER_SUBAGENT: {
             className: "ArcPlayerSubagent",
+            useSQLite: true
+          },
+          CODER_SUBAGENT: {
+            className: "CoderSubagent",
             useSQLite: true
           }
         }

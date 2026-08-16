@@ -29,7 +29,8 @@ npx wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=
 ```
 
 Put the key and `GATEWAY_ORIGINS` in `.dev.vars` before starting — the Worker reads both
-on its first request ([`.dev.vars.example`](.dev.vars.example) lists all three secrets):
+on its first request ([`.dev.vars.example`](.dev.vars.example) documents every secret,
+including the coder-only ones):
 
 ```bash
 npm run dev
@@ -49,12 +50,18 @@ Register each agent with your gateway using the **same endpoint** and its own
 | `https://<your-worker>/a2a` | `reactive`   |
 | `https://<your-worker>/a2a` | `proactive`  |
 | `https://<your-worker>/a2a` | `arc-player` |
+| `https://<your-worker>/a2a` | `coder`      |
 
 `/a2a` is core's default, not a requirement — see [Where the endpoints
 live](#where-the-endpoints-live). Register whatever path this deployment actually serves.
 
 > **Browser Rendering needs a paid Workers plan.** On the free tier, remove `browser()`
 > from the agents' `plugins.ts` and the `browser` binding from `wrangler.jsonc`.
+
+> **The coder's container needs a paid plan and a running Docker daemon** — Docker
+> Desktop on macOS and Windows, the Docker CLI alone on Linux. `npm run deploy` builds
+> `./Dockerfile` on this machine. See [The coder needs two things the others do
+> not](#the-coder-needs-two-things-the-others-do-not).
 
 ---
 
@@ -168,15 +175,16 @@ request body, and a token minted for one agent would work against any sibling.
 
 ---
 
-## The three agents
+## The four agents
 
 | Agent                                   | What it is                                                              | Why it's here                                                                                    |
 | --------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | [`reactive/`](src/agents/reactive/)     | Round loop, DAG delegation, wave scheduling, subagent execution         | The flagship                                                                                     |
 | [`proactive/`](src/agents/proactive/)   | Sees every message, decides whether each is for it, answers in one turn | **The second consumer** — the only thing proving core isn't shaped around reactive's assumptions |
 | [`arc-player/`](src/agents/arc-player/) | Plays ARC-AGI-3 games                                                   | Proves a domain plugin composes without touching anything shared                                 |
+| [`coder/`](src/agents/coder/)           | Clones a repo into a Linux sandbox, changes it, opens a pull request    | The only agent on a different model provider — proves `ModelRuntime` is a real seam              |
 
-Reactive and arc-player are both `RoundAgentBase` from
+Reactive, arc-player and coder are all `RoundAgentBase` from
 [`@loopingai/core/round`](https://github.com/Looping-AI/looping-core) and differ in five
 methods each. Proactive extends `LoopingAgent` directly and writes its own loop — it
 imports no part of `/round` at all, and `npm run verify:isolation` asserts that on the
@@ -188,6 +196,130 @@ built graph. Two genuinely different loop shapes on one core.
 | ends when   | the model calls a control tool (`toolChoice: "required"`) | the model stops, or calls `no_reply` |
 | can decline | no — every round answers or delegates                     | yes, that is the point               |
 | rounds      | many, driven by a Workflow                                | exactly one                          |
+
+### The coder needs two things the others do not
+
+It is the only agent that runs on **Claude** rather than Workers AI, and the only
+one with a **container** underneath. Both are opt-in at the edges rather than
+changes to anything shared: `src/agents/coder/models.ts` exports one
+`ModelRuntimeFactory` built on `createAnthropicModelRuntime(...)` from
+`@loopingai/core/anthropic`, and the round loop never learns which provider
+produced its `LanguageModel`.
+
+Four extra secrets, all coder-only — see `.dev.vars.example`:
+
+```sh
+npx wrangler secret put SELF_ORIGIN              # this deployment's own origin
+npx wrangler secret put ANTHROPIC_PROXY_AUDIENCE # the looping-anthropic-proxy origin
+npx wrangler secret put GITHUB_TOKEN             # contents + PR write
+npx wrangler secret put AI_GATEWAY_TOKEN         # only if the gateway is authenticated
+```
+
+The first two are origins, not credentials — they are secrets because they are
+per-deployment, and each must agree with its half of the proxy's own pair
+(`CALLER_ORIGINS`, `PROXY_AUDIENCE`). **No Claude credential is set here.** It
+lives in the proxy Worker, which is what holds `ANTHROPIC_TOKEN_PRIMARY` and
+`ANTHROPIC_TOKEN_FALLBACK`; this Worker authenticates to it with a 120-second
+token signed from `A2A_SIGNING_KEY`.
+
+**Three authorities sit between a round and Claude, each with its own
+credential**, and this trips everyone once. Only the coder meets any of them: the
+other three agents reach AI Gateway through the `AI` binding, which the platform
+authenticates, while the coder calls a gateway URL directly and presents
+credentials of its own.
+
+| authority           | credential                                     | lives in                  |
+| ------------------- | ---------------------------------------------- | ------------------------- |
+| AI Gateway          | `AI_GATEWAY_TOKEN`                             | this Worker               |
+| the Anthropic proxy | a 120-second JWT signed from `A2A_SIGNING_KEY` | minted per request        |
+| Anthropic           | `ANTHROPIC_TOKEN_PRIMARY` / `_FALLBACK`        | `looping-anthropic-proxy` |
+
+**All three answer `401`,** with the same status and the same headers, so naming
+the wrong one costs an operator a rotation of a secret that was working and
+leaves the broken one broken. What separates them is the response body, which
+core's `rejectedBy` reads — `AiGatewayError`/`2009` is the gateway,
+`LoopingProxyError`/`4010` is the proxy, `authentication_error` is Anthropic, and
+anything else is reported as unknown rather than guessed at. Each is matched on
+name **or** code, since either alone is one upstream rename away from silently
+falling through.
+
+Only two of the three are rotations at all. The proxy credential is minted fresh
+per request, so a refusal there is never an expired secret — it means the two
+Workers disagree: `SELF_ORIGIN` is missing from the proxy's `CALLER_ORIGINS`,
+`ANTHROPIC_PROXY_AUDIENCE` does not match its `PROXY_AUDIENCE`, or
+`A2A_SIGNING_KEY` was rotated here while the JWKS at `SELF_ORIGIN` still serves
+the old public key. That copy sends an operator to look, not to rotate.
+
+The gateway one is the easiest to misread. With **Authenticated Gateway** enabled
+(AI Gateway → your gateway → Settings), a request with no `cf-aig-authorization`
+is rejected before Anthropic ever sees it — a `401` that never reaches the
+gateway's own call log either, which looks exactly like a dead Claude token until
+you read the body. `AI_GATEWAY_TOKEN` is that header; leave it unset if your
+gateway has authentication off.
+
+Claude's own tokens **expire**, and when they do the coder does not retry and does
+not fall back — core classifies a rejected credential as non-recoverable, so it
+burns neither the Workflow's retry budget nor the model's fallback slot on a
+credential that will refuse every time. Because the proxy has already tried its
+fallback token by then, that failure means both are dead. The task ends by telling
+an operator which authority refused and the exact commands to clear it — for
+Claude, `claude setup-token` and `wrangler secret put`, run in the proxy
+repository rather than this one.
+
+The container needs the **Workers Paid** plan and a running Docker daemon on the
+machine that runs `wrangler deploy` — wrangler builds `./Dockerfile` locally and
+pushes the image, so that is your laptop or your CI runner, never Cloudflare:
+
+- **macOS and Windows** — install **Docker Desktop** and have it running. The
+  `docker` CLI on its own is not enough: the build needs a Linux kernel, which is
+  what Desktop's VM provides. (Anything else that exposes a daemon socket works —
+  OrbStack, Colima, Rancher Desktop.)
+- **Linux** — the Docker CLI and engine, and nothing else. No Desktop.
+
+With no daemon reachable, `npx wrangler deploy --containers-rollout=none` deploys
+the Worker and leaves the container alone.
+
+#### The container is cached, not destroyed — but only while it is awake
+
+The container is keyed on the **caller**, not the task, so a follow-up request
+lands in a warm container with the checkout and its `node_modules` already there.
+A cancelled task destroys it (a half-finished edit must not become the next task's
+starting point); a completed one keeps it.
+
+That warm start lasts exactly as long as the container stays awake. **There is no
+cross-sleep cache, and adding an R2 bucket will not give you one.** The coder used
+to snapshot `/workspace` to R2 between tasks, and it never succeeded once in
+production: `@cloudflare/sandbox` mounts that archive _inside the container_ over
+s3fs, so it needs R2 S3-API credentials (`CLOUDFLARE_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `BACKUP_BUCKET_NAME`) — a Workers R2
+binding has no presign API and cannot supply them. Every task logged
+`InvalidBackupConfigError`; the whole path was dead code with a bucket attached.
+
+It was deleted rather than credentialed. What it cached is reproducible from git
+and `npm ci`; what is genuinely _not_ reproducible is uncommitted work, and the
+right home for that is a Durable-Object-backed workspace
+(`@cloudflare/computer`, whose VFS is DO SQLite and needs no credential at all).
+That is a substrate swap rather than a config change, and it is currently blocked
+on one upstream gap — an `ignore` list reachable from `Workspace.pull()`, without
+which a `pull()` after `npm ci` would drag tens of thousands of files into SQLite.
+
+One consequence worth knowing before you debug something surprising: **a caller's
+checkout outlives their task.** `repo_clone` therefore fetches and resets an
+existing checkout rather than assuming an empty directory — and refuses outright
+if the tree is dirty, because those changes are a previous task's work and nobody
+could recover them once discarded.
+
+`CoderSubagent.modelRuntime` must stay in step with `CoderAgent.modelRuntime`: a
+facet left on the default would run every delegated subtask on a different model
+than the round that delegated it, silently, because both satisfy `ModelRuntime`.
+Which is why neither writes the provider out — both return `coderModels` from
+`src/agents/coder/models.ts`, so there is nothing to keep in step.
+
+Delegated subtasks reach the parent's container through
+`code()`'s `resolveRuntime`, which runs on the parent and puts the container key
+into the runtime state every tool family receives. That indirection is required,
+not stylistic: core gives a subagent execution a `callerKey` thunk that
+**throws**, so a facet cannot derive the key itself.
 
 ---
 

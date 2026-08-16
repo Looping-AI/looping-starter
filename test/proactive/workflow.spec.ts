@@ -208,5 +208,11 @@ describe("against the real Durable Object", () => {
         status: { state: TaskState.TASK_STATE_COMPLETED }
       } as Parameters<typeof stub.saveTask>[0])
     ).toBe(false);
-  });
+    // Five round trips into a cold Durable Object, the first of which runs
+    // core's whole migration journal. Vitest's 5 s default is enough on an idle
+    // machine and not enough when the pool is running every other spec file
+    // alongside it — which showed up as a timeout here the day an unrelated
+    // seventh spec was added. The test is not slow because anything is wrong;
+    // it is slow because it is the only one that boots a real agent.
+  }, 20_000);
 });
