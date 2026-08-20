@@ -1,9 +1,4 @@
-import type {
-  AgentPlugin,
-  CoreConfigOverrides,
-  ModelConfig
-} from "@loopingai/core";
-import type { ModelRuntime } from "@loopingai/core/agent";
+import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
 import type { PluginHost } from "@loopingai/core/host";
 import {
   RoundAgentBase,
@@ -14,7 +9,6 @@ import { computerExec } from "@loopingai/plugins/computer";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { activeRepo } from "./active-repo";
-import { coderModels } from "./models";
 import { container, parentPlugins } from "./plugins";
 import { workspaceName, WORKSPACE_DIR } from "./workspace-do";
 import { soulPrompt } from "./soul";
@@ -24,9 +18,12 @@ import { CoderSubagent } from "./subagent";
  * The coder agent.
  *
  * A delegating round agent like `reactive`: the loop, the durable Subtask DAG and
- * the subagent execution are all `@loopingai/core/round`. Two things make it the
- * odd one out in this Worker, and both are overrides below rather than forks of
- * anything.
+ * the subagent execution are all `@loopingai/core/round`, and the model pair is
+ * core's Workers AI default like every other agent here.
+ *
+ * What makes it the odd one out is the container underneath — so the overrides
+ * below are all lifecycle, not inference: a weekly reclaim sweep for workspaces
+ * nothing is calling into, and a working-tree reset when a task is cancelled.
  */
 export class CoderAgent extends RoundAgentBase<Env> {
   protected agentConfig(): CoreConfigOverrides {
@@ -53,20 +50,6 @@ export class CoderAgent extends RoundAgentBase<Env> {
 
   protected subagentClass(): SubagentClass {
     return CoderSubagent;
-  }
-
-  /**
-   * Run on Claude instead of Workers AI — see `./models.ts`, which
-   * `CoderSubagent` returns from the same seam. One definition, so the parent
-   * and its facet cannot drift onto different providers.
-   *
-   * `requireSelfOrigin()` is core's: this deployment's own origin, learned from
-   * the `jku` every turn carries, and the `iss` of the token minted for the
-   * proxy. Passed as a thunk because it is read per model call, and a runtime is
-   * built before the first turn reaches this instance.
-   */
-  protected override modelRuntime(model: ModelConfig): ModelRuntime {
-    return coderModels(() => this.requireSelfOrigin())(this.env, model);
   }
 
   /**

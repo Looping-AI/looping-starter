@@ -53,8 +53,7 @@ const AGENTS = [
       plugin("triage"),
       plugin("computer"),
       plugin("repo"),
-      "@cloudflare/computer",
-      "@anthropic-ai/sdk"
+      "@cloudflare/computer"
     ],
     // Re-baselined when `splitting` was turned on above, not because this agent
     // grew: the old number simply never counted the chunks it reaches through a
@@ -85,7 +84,6 @@ const AGENTS = [
       plugin("repo"),
       "@cloudflare/shell",
       "@cloudflare/computer",
-      "@anthropic-ai/sdk",
       core("round")
     ],
     maxBytes: 1_750_000
@@ -103,8 +101,7 @@ const AGENTS = [
       plugin("recall"),
       plugin("computer"),
       plugin("repo"),
-      "@cloudflare/computer",
-      "@anthropic-ai/sdk"
+      "@cloudflare/computer"
     ],
     maxBytes: 3_300_000
   },

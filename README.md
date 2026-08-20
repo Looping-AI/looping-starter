@@ -207,85 +207,38 @@ built graph. Two genuinely different loop shapes on one core.
 | can decline | no — every round answers or delegates                     | yes, that is the point               |
 | rounds      | many, driven by a Workflow                                | exactly one                          |
 
-### The coder needs two things the others do not
+### The coder needs one thing the others do not
 
-It is the only agent that runs on **Claude** rather than Workers AI, and the only
-one with a **container** underneath. Both are opt-in at the edges rather than
-changes to anything shared: `src/agents/coder/models.ts` exports one
-`ModelRuntimeFactory` built on `createAnthropicModelRuntime(...)` from
-`@loopingai/core/anthropic`, and the round loop never learns which provider
-produced its `LanguageModel`.
+A **container**. Everything else about it — the round loop, the durable Subtask
+DAG, the model pair — is what every other agent here runs, and that is a recent
+simplification worth knowing about if you are reading older notes.
 
-Three extra secrets, all coder-only — see `.env.example`:
+It used to run **Claude** rather than Workers AI, through an AI Gateway _custom
+provider_ whose origin was a sibling Worker (`looping-anthropic-proxy`) holding
+the Anthropic credentials. That whole path was removed on 2026-08-20. An
+Anthropic **subscription** credential does not serve raw Messages API calls on
+any frontier model — every Opus call came back `429` in ~10 ms at zero tokens,
+Sonnet followed, and the only model that answered was Haiku 4.5, which rejects
+the `output_config.effort` field the agent was built around. Holding two
+credentials on separate accounts did not help: both refused the same request.
 
-```sh
-npx wrangler secret put ANTHROPIC_PROXY_ORIGIN  # the looping-anthropic-proxy origin
-npx wrangler secret put GITHUB_TOKEN            # contents + PR write
-npx wrangler secret put AI_GATEWAY_TOKEN        # only if the gateway is authenticated
-```
+So the coder now runs `@cf/zai-org/glm-5.2` with `@cf/moonshotai/kimi-k2.7-code`
+as its fallback, through the `AI` binding like everything else. What is left in
+`src/config.ts` is one `CODER_MODEL` block that differs from the shared `MODEL`
+in exactly one way — a 32k output ceiling instead of 16k, because a coding round
+writes a file and a test in the same turn and a truncated patch reads as a
+finished one.
 
-The first is an origin, not a credential — it is a secret because it is
-per-deployment, and it must be the proxy's own public origin, which the proxy
-compares against each request rather than storing in a secret of its own.
+There is **no model credential in this deployment**, for any agent. The `AI`
+binding is authenticated by the platform. Nothing to store, nothing to rotate,
+and the coder's container has never seen one.
 
-**This deployment's own origin is not one of them.** It is the `iss` of the token
-the coder mints, and it is the origin the request already arrived on, so core
-discovers it (`requireSelfOrigin()`, from the `jku` that rides every turn, pinned
-on the first turn an isolate serves) rather than reading a `SELF_ORIGIN` secret
-that restated it. What is left for an operator is on the proxy: its
-`CALLER_ORIGINS` must contain the origin this Worker is registered and reached at
-— the one serving the `/.well-known/jwks.json` it fetches.
-
-**No Claude credential is set here.** It
-lives in the proxy Worker, which is what holds `ANTHROPIC_TOKEN_PRIMARY` and
-`ANTHROPIC_TOKEN_FALLBACK`; this Worker authenticates to it with a 120-second
-token signed from `A2A_SIGNING_KEY`.
-
-**Three authorities sit between a round and Claude, each with its own
-credential**, and this trips everyone once. Only the coder meets any of them: the
-other three agents reach AI Gateway through the `AI` binding, which the platform
-authenticates, while the coder calls a gateway URL directly and presents
-credentials of its own.
-
-| authority           | credential                                     | lives in                  |
-| ------------------- | ---------------------------------------------- | ------------------------- |
-| AI Gateway          | `AI_GATEWAY_TOKEN`                             | this Worker               |
-| the Anthropic proxy | a 120-second JWT signed from `A2A_SIGNING_KEY` | minted per request        |
-| Anthropic           | `ANTHROPIC_TOKEN_PRIMARY` / `_FALLBACK`        | `looping-anthropic-proxy` |
-
-**All three answer `401`,** with the same status and the same headers, so naming
-the wrong one costs an operator a rotation of a secret that was working and
-leaves the broken one broken. What separates them is the response body, which
-core's `rejectedBy` reads — `AiGatewayError`/`2009` is the gateway,
-`LoopingProxyError`/`4010` is the proxy, `authentication_error` is Anthropic, and
-anything else is reported as unknown rather than guessed at. Each is matched on
-name **or** code, since either alone is one upstream rename away from silently
-falling through.
-
-Only two of the three are rotations at all. The proxy credential is minted fresh
-per request, so a refusal there is never an expired secret — it means the two
-Workers disagree: the origin this Worker is reached on is missing from the proxy's
-`CALLER_ORIGINS`, `ANTHROPIC_PROXY_ORIGIN` does not name the hostname the gateway
-forwards to (the proxy logs the origin it expected as `expectedAudience`), or
-`A2A_SIGNING_KEY` was rotated here while the JWKS this Worker serves still carries
-the old public key. That copy sends an operator to look, not to rotate.
-
-The gateway one is the easiest to misread. With **Authenticated Gateway** enabled
-(AI Gateway → your gateway → Settings), a request with no `cf-aig-authorization`
-is rejected before Anthropic ever sees it — a `401` that never reaches the
-gateway's own call log either, which looks exactly like a dead Claude token until
-you read the body. `AI_GATEWAY_TOKEN` is that header; leave it unset if your
-gateway has authentication off.
-
-Claude's own tokens **expire**, and when they do the coder does not retry and does
-not fall back — core classifies a rejected credential as non-recoverable, so it
-burns neither the Workflow's retry budget nor the model's fallback slot on a
-credential that will refuse every time. Because the proxy has already tried its
-fallback token by then, that failure means both are dead. The task ends by telling
-an operator which authority refused and the exact commands to clear it — for
-Claude, `claude setup-token` and `wrangler secret put`, run in the proxy
-repository rather than this one.
-
+The secrets that went away with that path were `ANTHROPIC_PROXY_ORIGIN` and
+`AI_GATEWAY_TOKEN`; neither has a replacement. If a gateway `401` ever appears,
+it means Authenticated Gateway is switched on for the gateway named by
+`aiGatewayId` — switch it off, because the binding does not send a gateway token.
+`CREDENTIAL_COPY` in `src/agents/coder/workflow.ts` says as much to the operator
+at the moment it happens.
 The container needs the **Workers Paid** plan and a running Docker daemon on the
 machine that runs `wrangler deploy` — wrangler builds `./Dockerfile` locally and
 pushes the image, so that is your laptop or your CI runner, never Cloudflare:

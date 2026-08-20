@@ -1,13 +1,7 @@
-import type {
-  AgentPlugin,
-  CoreConfigOverrides,
-  ModelConfig
-} from "@loopingai/core";
-import type { ModelRuntime } from "@loopingai/core/agent";
+import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
 import type { PluginHost } from "@loopingai/core/host";
 import { RecipeSubagentHost } from "@loopingai/core/round";
 import { CODER_CONFIG } from "@/config";
-import { coderModels } from "./models";
 import { subagentPlugins } from "./plugins";
 
 /**
@@ -35,19 +29,22 @@ export class CoderSubagent extends RecipeSubagentHost<Env> {
   }
 
   /**
-   * The same provider the parent runs on — literally the same function, from
-   * `./models.ts`, which is what makes "the same" a fact rather than a promise.
+   * There is deliberately **no `modelRuntime` override here**, and that is worth
+   * a note because there used to be one and its absence looks like an omission.
    *
-   * This override is not optional. A facet left on core's Workers AI default
-   * would execute every delegated subtask on a different model than the round
-   * that delegated it, and it would do so silently, because both satisfy
-   * `ModelRuntime` and nothing downstream can tell them apart.
+   * The property that matters is that a facet runs the same provider as the
+   * round that delegated to it: one left on a different provider would execute
+   * every subtask on a different model, silently, since both satisfy
+   * `ModelRuntime` and nothing downstream can tell them apart. That used to
+   * require an override in both classes pointing at one shared factory, because
+   * the parent was on Claude and core's default was not.
    *
-   * A facet has no request path of its own, so its `requireSelfOrigin()` answers
-   * with what the parent passed on the chunk that started this execution — the
-   * same origin the parent signs with, by construction.
+   * Now that the coder runs core's Workers AI default like every other agent,
+   * the same guarantee is had by *neither* class overriding the seam — which is
+   * the stronger version of it: there is no second definition to drift.
+   *
+   * `agentConfig` still has to match the parent's, and does: both return
+   * `CODER_CONFIG`, so the pair and the ceilings resolve identically on each
+   * side.
    */
-  protected override modelRuntime(model: ModelConfig): ModelRuntime {
-    return coderModels(() => this.requireSelfOrigin())(this.env, model);
-  }
 }

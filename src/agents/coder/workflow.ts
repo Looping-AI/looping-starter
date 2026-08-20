@@ -19,66 +19,73 @@ import { coder } from "./definition";
  * Kept next to the handler rather than in `round-policy.ts` because that file is
  * shared with the agents that have no credential of their own to reject.
  *
- * The split is the whole point. There are **three** authorities between a round
- * and Claude — AI Gateway, the Anthropic proxy, and Anthropic itself — each
- * with its own credential, and all three answer `401`. Naming the wrong one
- * costs an operator a rotation of a secret that was working, and leaves the
- * broken one broken.
+ * ## Most of this is now unreachable, and that is the honest thing to write
  *
- * Note that only two of the three are rotations at all. The proxy credential is
- * minted per request from `A2A_SIGNING_KEY`, and its `iss` is this Worker's own
- * origin as discovered from the request path rather than a secret, so when it is
- * refused the fault is upstream of any stored value — which is why that copy
- * sends an operator to look rather than to rotate.
+ * `NonRecoverableKind` is core's, and it names the three authorities that can
+ * sit between a round and a model: the provider, the AI Gateway, and an optional
+ * intermediary between them. This agent used to have all three — Anthropic, the
+ * gateway, and a proxy Worker holding the Anthropic credential.
+ *
+ * It now reaches Workers AI through the `AI` binding, which the platform
+ * authenticates. There is no model credential in this Worker, and no
+ * intermediary at all. So two of the four arms below describe a topology this
+ * deployment no longer has, and the copy says so rather than sending an operator
+ * to rotate a secret that does not exist.
+ *
+ * The `Record` stays total because core made it total on purpose: a kind added
+ * upstream must fail to compile here rather than fall through to silence.
  */
 const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
   credential: [
-    "I could not reach Claude: it rejected the credential.",
+    "I could not reach the model: the provider rejected the credential.",
     "",
-    "Both of them, in fact — the proxy tries its fallback token whenever the primary is refused, so this means neither works. They live in the looping-anthropic-proxy Worker, not this one. An operator needs to mint new ones and redeploy the secrets from that repository:",
+    "That is unexpected here. This agent calls Workers AI through the `AI` binding, which Cloudflare authenticates for the Worker — there is no model API key in this deployment to expire or be revoked, so there is nothing for an operator to rotate.",
     "",
-    "    claude setup-token",
-    "    npx wrangler secret put ANTHROPIC_TOKEN_PRIMARY",
-    "    claude setup-token",
-    "    npx wrangler secret put ANTHROPIC_TOKEN_FALLBACK",
+    "That makes this almost certainly a platform-side fault rather than a configuration one. Worth checking, in order:",
     "",
-    "Paste each new token when prompted, then send this request again. Nothing was changed in the repository."
+    "  1. The Cloudflare status page, for a Workers AI or AI Gateway incident.",
+    "  2. Whether the account still has Workers AI enabled and is not past a billing limit.",
+    "  3. `npm run cf -- ai --since 1h` — the gateway log records what the request actually returned.",
+    "",
+    "Then send this request again. Nothing was changed in the repository."
   ].join("\n"),
 
   "proxy-credential": [
-    "I could not reach Claude: the Anthropic proxy rejected this Worker before the request got there.",
+    "I could not reach the model: something between this Worker and the provider rejected the request.",
     "",
-    "This one is not a token to rotate. The credential it refused is a short-lived token signed per request with A2A_SIGNING_KEY, so a rejection means the two Workers disagree about something rather than that a secret expired. Claude never saw this request, and its credentials are almost certainly fine.",
+    "This deployment has no such intermediary. The coder used to call Claude through a proxy Worker that held the Anthropic credential; that path was removed, and the agent now calls Workers AI through the `AI` binding directly.",
     "",
-    "An operator should check, in this order:",
+    "So this almost certainly means a stale deployment is still serving — an old version of this Worker, or a preview alias pointing at one. An operator should confirm what is actually deployed:",
     "",
-    "  1. The origin this Worker is reached on appears in CALLER_ORIGINS (the proxy). That is the origin serving its /.well-known/jwks.json — the one the gateway calls it at, which is a workers.dev or preview hostname if that is what was registered.",
-    "  2. ANTHROPIC_PROXY_ORIGIN (this Worker) is the proxy's own public origin — the Base URL the gateway forwards to.",
-    "  3. A2A_SIGNING_KEY was rotated here but the JWKS this Worker serves at /.well-known/jwks.json still serves the old public key.",
+    "    npx wrangler deployments list",
     "",
     "Then send this request again. Nothing was changed in the repository."
   ].join("\n"),
 
   "gateway-credential": [
-    "I could not reach Claude: the AI Gateway rejected the request before it got there.",
+    "I could not reach the model: the AI Gateway rejected the request before it got there.",
     "",
-    "That is the gateway's own token, not the Claude one — Claude never saw this request, so its credential is probably fine. An operator needs to mint a gateway token (AI Gateway → the gateway → Settings → Create authentication token) and redeploy the secret:",
+    "That is the gateway's own authentication, not the model's — the model never saw this request. It happens when the gateway has Authenticated Gateway switched on, because the `AI` binding does not send a gateway token.",
     "",
-    "    npx wrangler secret put AI_GATEWAY_TOKEN",
+    "An operator has two options, and the first is usually right:",
+    "",
+    "  1. Turn Authenticated Gateway off for this gateway (AI Gateway → the gateway → Settings). Requests from the binding are already authenticated as this account's Worker.",
+    "  2. Or point the agent at a different gateway by changing `aiGatewayId` in src/config.ts.",
     "",
     "Then send this request again. Nothing was changed in the repository."
   ].join("\n"),
 
   "unknown-credential": [
-    "I could not reach Claude: something on the path refused the request, and the response did not say which.",
+    "I could not reach the model: something on the path refused the request, and the response did not say which.",
     "",
-    "There are three authorities involved and it is one of them. Checking in order, cheapest first:",
+    "There are two authorities left on this path, and it is one of them. Checking in order, cheapest first:",
     "",
-    "  1. The proxy — no rotation needed. Confirm the origin this Worker is reached on is in the proxy's CALLER_ORIGINS and that ANTHROPIC_PROXY_ORIGIN names the proxy's own origin.",
-    "  2. The gateway:",
-    "         npx wrangler secret put AI_GATEWAY_TOKEN    # AI Gateway → Settings → Create authentication token",
-    "  3. Claude, from the looping-anthropic-proxy repository:",
-    "         claude setup-token && npx wrangler secret put ANTHROPIC_TOKEN_PRIMARY",
+    "  1. The AI Gateway — if Authenticated Gateway is on for this gateway, turn it off; the `AI` binding does not send a gateway token.",
+    "  2. Workers AI itself — check the Cloudflare status page and that the account has Workers AI enabled and is within its limits.",
+    "",
+    "The gateway log is the fastest way to tell them apart, because it records the status the request actually came back with:",
+    "",
+    "    npm run cf -- ai --since 1h",
     "",
     "Then send this request again. Nothing was changed in the repository."
   ].join("\n")

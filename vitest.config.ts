@@ -36,33 +36,13 @@ process.env.ARC_API_KEY ??= "test-key";
 // repo tools against an injected `exec`. These exist only so `secrets.required`
 // is satisfied and the pool stops warning.
 //
-// No Claude credential appears here because this Worker no longer holds one:
-// it authenticates to `looping-anthropic-proxy` with a token signed from
-// `A2A_SIGNING_KEY` above, and the proxy holds the Anthropic tokens.
+// No model credential appears here because this Worker holds none: every agent
+// reaches Workers AI through the `AI` binding, which the platform authenticates.
 //
-// `AI_GATEWAY_TOKEN` is a separate authority again: it authenticates this
-// Worker *to* AI Gateway, which is why it is listed on its own.
+// This Worker's *own* origin has no line here on purpose either: core discovers
+// it from the `jku` on each turn, so there is nothing to answer — and a default
+// here would hide the case an operator actually hits.
 process.env.GITHUB_TOKEN ??= "test-token";
-process.env.AI_GATEWAY_TOKEN ??= "test-token";
-// The proxy this Worker calls. A public string rather than a credential, but a
-// secret all the same because it is per-deployment, so it is answered here like
-// the rest. Nothing in the suite calls the proxy; it only needs to be a
-// well-formed origin.
-//
-// This Worker's *own* origin has no line here on purpose: core discovers it from
-// the `jku` on each turn, so there is nothing to answer — and a default here
-// would hide the case an operator actually hits.
-// The real origin, not a placeholder, and that is load-bearing for exactly one
-// spec: `recorded.spec.ts` dispatches at this value, so it is baked into the
-// cassette's match key (method + URL + body). Recording under a real origin and
-// replaying under `https://proxy.test` is a cassette miss that reads as a
-// missing recording. Answered here rather than left to a shell variable for the
-// same reason — a value only the recorder's machine has is a value replay does
-// not have.
-//
-// Safe to point at production: nothing reaches it without a cassette. The VCR
-// `outboundService` blocks every un-recorded fetch rather than forwarding it.
-process.env.ANTHROPIC_PROXY_ORIGIN ??= "https://anthropic-proxy.loopingai.org";
 
 /**
  * The recorder, and the reason the suite cannot reach the network by accident.

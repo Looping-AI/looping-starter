@@ -87,61 +87,52 @@ export const ARC_PLAYER_CONFIG: CoreConfigOverrides = {
 };
 
 /**
- * The coder's models — Claude, not Workers AI.
+ * The coder's models — a distinct pair from the shared `MODEL` above.
  *
- * The only agent here that changes provider, because writing code that compiles
- * and passes its own tests is where model quality shows up as a working pull
- * request or a wasted container hour. Built through `@loopingai/core/anthropic`
- * in `src/agents/coder/models.ts`; nothing about the round loop changes.
+ * Same provider as every other agent here (Workers AI through AI Gateway) and
+ * the same primary, so what this block actually expresses is one difference:
+ * **a much larger output ceiling**. A coding round writes a file and a test in
+ * the same turn, and a truncated patch reads as a finished one, so 32k rather
+ * than reactive's 16k. Everything else is deliberately the house default.
  *
- * **Both slots must accept `output_config.effort`, and that is the constraint
- * that picks them.** `models.ts` sets `effort: "xhigh"` on the *runtime*, and
- * core's `createModelPair` stamps it onto the primary and the fallback
- * identically — there is no per-slot effort. So a slot filled with a model that
- * rejects the field is not a degraded fallback, it is a dead one.
+ * Both slots must support function calling and tolerate a long system prompt.
+ * That is not a formality here — the round loop runs with `toolChoice:
+ * "required"` and a round *ends* only when the model calls a control tool, so a
+ * model that answers in prose instead burns the entire turn budget reaching no
+ * ending. The pair is picked on that behaviour before anything else.
  *
- * That is not hypothetical. This pair was `claude-sonnet-5` /
- * `claude-haiku-4-5-20251001` until 2026-08-19, and Haiku 4.5 answers every
- * request carrying `output_config.effort` with
- * `400 "This model does not support the effort parameter."`. The fallback slot
- * is only ever reached once the primary has already failed, so the fault stayed
- * invisible until the night Sonnet started rate-limiting — at which point the
- * ladder that existed to absorb it turned out to have never served a single
- * call. Opus 5 and Sonnet 5 both take all five effort levels.
+ * The fallback is a different vendor and family, per `ModelConfig`'s advice:
+ * what makes a primary throw — an outage, a rate limit, a bad deploy of one
+ * vendor's serving stack — is correlated within a family, so a same-family
+ * fallback is a retry wearing a costume. `resolveConfig` refuses an identical
+ * pair outright.
  *
- * **Opus primary, Sonnet fallback.** Opus was demoted on 2026-08-11 because a
- * *subscription* credential caps Opus far more tightly than Sonnet, and with the
- * cap spent every Opus call returned `429` in ~10ms at zero tokens. That reading
- * was correct about the mechanism and wrong about the remedy: the proxy now
- * holds two credentials on **separate accounts**, and it retries the whole
- * request on the second whenever the first answers `401`, `403` or `429`. A cap
- * on one account is no longer a cap on the agent.
+ * ## Why this is no longer Claude
  *
- * **The fallback is also Claude**, against `ModelConfig`'s different-vendor
- * advice, for one mechanical reason and one judgement. Both slots are built by
- * the same Anthropic runtime, so a Workers AI id would not resolve; and a weaker
- * model that quietly finishes a half-written refactor produces a pull request
- * that looks finished and is not, which is worse than a failed task.
+ * It was `claude-opus-5` / `claude-sonnet-5` until 2026-08-20, reached through
+ * an AI Gateway custom provider whose origin was a separate Worker holding two
+ * Anthropic *subscription* credentials. That path is gone, and it is worth
+ * writing down why so nobody rebuilds it.
  *
- * Be honest about what this pair does and does not buy: two Claude models share
- * a vendor, so an Anthropic-wide outage takes both. What it does cover is the
- * failure that actually happens here — a ceiling or a capacity wobble on one
- * *model*, which Sonnet absorbs at a fraction of the cost. Credential-shaped
- * failures are covered a layer down, by the proxy's two accounts.
+ * A subscription credential does not work for raw Messages API calls on any
+ * frontier model. Every Opus call returned `429` in ~10 ms at zero tokens, and
+ * Sonnet followed. Haiku 4.5 was the sole exception, and Haiku 4.5 rejects the
+ * `output_config.effort` field this agent was built around — so the one model
+ * that answered was the one model that could not be used. Holding two
+ * credentials on separate accounts did not clear it either: both refused the
+ * same request. The remedy is not a better proxy; it is either a real API
+ * credential or the sanctioned `claude-code` client, and neither is this file's
+ * business.
  *
- * `reasoningEffort` stays inside core's three-value union; the coder actually
- * runs at `xhigh`, passed to the Anthropic runtime directly.
+ * `reasoningEffort` is now plain `"high"`, inside core's three-value union. The
+ * `xhigh` this used to run at existed only as an argument to the Anthropic
+ * runtime and has nothing to reach through any more.
  */
 const CODER_MODEL = {
-  chatModelId: "claude-opus-5",
-  fallbackChatModelId: "claude-sonnet-5",
+  chatModelId: "@cf/zai-org/glm-5.2",
+  fallbackChatModelId: "@cf/moonshotai/kimi-k2.7-code",
+  /** AI Gateway slug; `"default"` auto-provisions on first request. */
   aiGatewayId: "default",
-  // A custom provider, not the native `anthropic` path: the gateway forwards
-  // `Authorization` untouched to a custom one and injects nothing, where the
-  // native path can supply its own via BYOK / Unified Billing. The slug must
-  // match the one registered on the account (`npm run cf -- provider:create`)
-  // minus its mandatory `custom-` prefix, which belongs in the request URL.
-  aiGatewayProvider: "custom-looping-anthropic",
   // Generous: a round that writes a file and a test spends output tokens on both,
   // and a truncated patch reads as a finished one.
   maxOutputTokens: 32_000,

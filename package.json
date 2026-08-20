@@ -31,7 +31,6 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.0.1",
-    "@anthropic-ai/sdk": "^0.116.0",
     "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
     "@loopingai/core": "^0.7.1",

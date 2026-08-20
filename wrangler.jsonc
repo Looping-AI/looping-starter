@@ -40,8 +40,9 @@
     }
   },
 
-  // No `vars`. The two origins pairing this Worker with the Anthropic proxy are
-  // secrets instead — see the bottom of this file for why.
+  // No `vars` and no model credential anywhere in this file — every agent reaches
+  // Workers AI through the `AI` binding below, which the platform authenticates.
+  // See the secrets block at the bottom for what remains and what was removed.
 
   // --- shared: required by core itself -------------------------------------
 
@@ -242,19 +243,24 @@
   // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
   // from — a property of the deployment, like the key.
   //
-  // `ANTHROPIC_PROXY_ORIGIN` is listed here too, and it is the odd one: a public
-  // string — it is an origin — so nothing is being hidden. What it is is
-  // *per-deployment*. The origin naming this Worker's proxy differs between
-  // production, staging and a fork, so a value committed to a public repository
-  // is a value every environment inherits and the wrong one ships by default.
-  // Configured rather than committed, it changes per environment with no code
-  // change.
+  // **There is no model credential here, for any agent.** Every agent in this
+  // Worker reaches Workers AI through the `AI` binding above, which Cloudflare
+  // authenticates for the Worker — there is no key to store, rotate or leak, and
+  // the coder's container has never seen one either.
   //
-  // Its counterpart is **not** here, and that is the point. This Worker's own
-  // origin used to be a `SELF_ORIGIN` secret next to it, restating the origin
-  // every request already arrives on; core discovers it now (`requireSelfOrigin`,
-  // from the `jku` that rides each turn), exactly as `looping-anthropic-proxy`
-  // discovers the audience it expects from `url.origin` rather than storing it.
+  // Two secrets used to sit here and are gone as of 2026-08-20, when the coder
+  // moved off Claude:
+  //
+  //   - `ANTHROPIC_PROXY_ORIGIN` named a separate Worker that held the Anthropic
+  //     credential and was reached through an AI Gateway custom provider.
+  //   - `AI_GATEWAY_TOKEN` authenticated this Worker *to* the gateway, and was
+  //     needed only because that path called a gateway URL directly rather than
+  //     going through the binding.
+  //
+  // Neither has a replacement. If a `401` ever surfaces from the gateway now, it
+  // means Authenticated Gateway is switched on for the configured `aiGatewayId`
+  // and should be switched off — the binding does not send a token. See
+  // `CREDENTIAL_COPY` in `src/agents/coder/workflow.ts`.
   "secrets": {
     "required": [
       "A2A_SIGNING_KEY",
@@ -262,35 +268,10 @@
       "ARC_API_KEY",
       // coder only. `GITHUB_TOKEN` needs contents and pull-request write.
       //
-      // `ANTHROPIC_PROXY_ORIGIN` is the proxy's own public origin, which must be
-      // the hostname the gateway forwards to: the proxy stores no matching
-      // secret, it compares against its own request origin. A mismatch is
-      // refused at the proxy and surfaces as `proxy-credential`, not as a Claude
-      // problem.
-      //
-      // The other half of that agreement needs nothing here. The `iss` of the
-      // token the coder mints is this deployment's own origin, discovered from
-      // the request path and pinned per isolate, so what an operator has to get
-      // right is the proxy's `CALLER_ORIGINS`: it must contain the origin this
-      // Worker is registered and reached at, which is the same origin serving
-      // the `/.well-known/jwks.json` the proxy fetches.
-      //
-      // **There is no Claude credential here.** It lives in the
-      // `looping-anthropic-proxy` Worker, which is the origin behind the
-      // gateway's custom provider. This Worker authenticates *to that proxy*
-      // with a short-lived token it signs using `A2A_SIGNING_KEY` above — so
-      // rotating the Claude token never touches this deployment, and a
-      // compromise of this Worker yields no Anthropic credential. It also keeps
-      // the existing property that a coder container never sees one.
-      //
-      // `AI_GATEWAY_TOKEN` authenticates this Worker *to the gateway*, a third
-      // authority again distinct from the two above, and needed only because
-      // the coder calls a gateway URL directly. The other three agents go
-      // through the `AI` binding, which the platform authenticates, so they
-      // need nothing here.
-      "ANTHROPIC_PROXY_ORIGIN",
-      "GITHUB_TOKEN",
-      "AI_GATEWAY_TOKEN"
+      // It is read exclusively inside `CoderWorkspaceDO`, never crosses an RPC
+      // argument, and never enters the container — `onAuth` checks the host
+      // allowlist at the moment the token is handed over.
+      "GITHUB_TOKEN"
     ]
   }
 }
