@@ -66,11 +66,6 @@ const USAGE = `cf.mjs — Cloudflare API proxy (credentials from ${ENV_FILE})
   ai [--since 2h] [--model <m>]          AI Gateway calls, as a digest
      [--limit 20] [--json|--raw]
   ai <logId> [--full] [--max N]          one call: prompt + reply (bodies)
-  provider                               list AI Gateway custom providers
-  provider create --url <https://...>    register the Anthropic proxy origin
-       [--slug looping-anthropic]        (slug is used as custom-<slug>)
-       [--disabled]
-  provider delete <id>                   remove one
   fields [--worker <name>]               list available log fields
   [METHOD] <path> [-d <json|@file>]      raw passthrough (path is account-relative
        [-q <k=v>]... [--raw]             unless it starts with "/")`;
@@ -601,104 +596,6 @@ async function cmdRaw(args) {
   if (!res.ok) process.exit(1);
 }
 
-/**
- * AI Gateway custom providers — the registration this deployment's Claude route
- * depends on.
- *
- * A custom provider makes the gateway a plain reverse proxy: it forwards
- * `Authorization` to `base_url` untouched and injects nothing, which is the
- * whole reason the coder uses one instead of the provider-native `/anthropic`
- * path (that path is provider-aware and can supply Anthropic's credential
- * itself via BYOK / Unified Billing).
- *
- * Requires an API token with `AI Gateway - Edit` — a level above what the read
- * commands here need, which is why this is the only mutating gateway command.
- *
- * https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/
- */
-async function cmdProvider(args) {
-  const sub = args[0];
-
-  if (!sub || sub === "list") {
-    const { res, text } = await request(
-      "GET",
-      acct("ai-gateway/custom-providers")
-    );
-    ensureOk(res, text);
-    const providers = parseJson(text)?.result ?? [];
-    if (!Array.isArray(providers) || providers.length === 0) {
-      return void out("no custom providers");
-    }
-    for (const p of providers) {
-      out(
-        `${p.enable ? "on " : "off"}  custom-${p.slug}  ${p.base_url}  (${p.id})`
-      );
-    }
-    return;
-  }
-
-  if (sub === "create") {
-    const { flags } = parseFlags(args.slice(1), {
-      bool: ["--disabled"],
-      value: ["--url", "--slug", "--name"]
-    });
-    const baseUrl = flags.url;
-    if (!baseUrl) die("missing --url (the proxy Worker's origin)");
-    // The gateway appends everything after `custom-<slug>/` to this, so a path
-    // here duplicates one in the request and yields /v1/v1/messages upstream —
-    // the single most common way this is misconfigured.
-    if (!/^https:\/\/[^/]+\/?$/.test(baseUrl)) {
-      die(
-        `--url must be an https origin with no path (got "${baseUrl}").\n` +
-          "The gateway appends the request path to it; a path here is duplicated upstream."
-      );
-    }
-    const slug = flags.slug ?? "looping-anthropic";
-    const body = JSON.stringify({
-      name: flags.name ?? "Looping Anthropic",
-      slug,
-      base_url: baseUrl.replace(/\/$/, ""),
-      description:
-        "Anthropic Messages API via looping-anthropic-proxy, which owns the credential.",
-      enable: !flags.disabled
-    });
-    const { res, text } = await request(
-      "POST",
-      acct("ai-gateway/custom-providers"),
-      { body }
-    );
-    if (res.status === 409) {
-      die(
-        `a custom provider with slug "${slug}" already exists — ` +
-          "run `cf provider` to see it, or pass a different --slug."
-      );
-    }
-    ensureOk(res, text);
-    const created = parseJson(text)?.result ?? {};
-    out(`created ${created.id ?? "?"}`);
-    // Printed rather than assumed: this is the exact string that has to match
-    // `aiGatewayProvider` in src/config.ts, prefix included.
-    out(`set aiGatewayProvider to: custom-${created.slug ?? slug}`);
-    return;
-  }
-
-  if (sub === "delete") {
-    const id = args[1];
-    if (!id) die("missing <id> (run `cf provider` to list them)");
-    const { res, text } = await request(
-      "DELETE",
-      acct(`ai-gateway/custom-providers/${id}`)
-    );
-    ensureOk(res, text);
-    // Worth saying out loud: deletion takes effect immediately and every coder
-    // round starts failing the moment it lands.
-    out(`deleted ${id} — requests routed through it now fail`);
-    return;
-  }
-
-  die(`unknown provider subcommand "${sub}" (list | create | delete)`);
-}
-
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 
@@ -714,8 +611,6 @@ if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
   await cmdWf(argv.slice(1));
 } else if (cmd === "ai") {
   await cmdAi(argv.slice(1));
-} else if (cmd === "provider") {
-  await cmdProvider(argv.slice(1));
 } else if (cmd === "fields") {
   await cmdFields(argv.slice(1));
 } else {
