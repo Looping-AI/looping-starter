@@ -31,10 +31,9 @@ import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
 process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
 process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
 process.env.ARC_API_KEY ??= "test-key";
-// The coder's two. Never real: nothing in the suite reaches Claude, the gateway
-// or GitHub — the adapter is unit-tested in core against a fake client, and the
-// repo tools against an injected `exec`. These exist only so `secrets.required`
-// is satisfied and the pool stops warning.
+// The coder's. Never real: nothing in the suite reaches GitHub — the repo tools
+// are tested against an injected `exec`. It exists only so `secrets.required` is
+// satisfied and the pool stops warning.
 //
 // No model credential appears here because this Worker holds none: every agent
 // reaches Workers AI through the `AI` binding, which the platform authenticates.

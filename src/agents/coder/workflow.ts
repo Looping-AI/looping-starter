@@ -19,21 +19,23 @@ import { coder } from "./definition";
  * Kept next to the handler rather than in `round-policy.ts` because that file is
  * shared with the agents that have no credential of their own to reject.
  *
- * ## Most of this is now unreachable, and that is the honest thing to write
+ * ## One of these is barely reachable, and that is the honest thing to write
  *
- * `NonRecoverableKind` is core's, and it names the three authorities that can
- * sit between a round and a model: the provider, the AI Gateway, and an optional
- * intermediary between them. This agent used to have all three — Anthropic, the
- * gateway, and a proxy Worker holding the Anthropic credential.
+ * `NonRecoverableKind` is core's, and it names the authorities that can sit
+ * between a round and a model: the AI Gateway and the provider. This agent used
+ * to have a third — a proxy Worker holding an Anthropic credential — and core
+ * carried a `proxy-credential` kind for it. Both were removed in core 0.8.0.
  *
  * It now reaches Workers AI through the `AI` binding, which the platform
- * authenticates. There is no model credential in this Worker, and no
- * intermediary at all. So two of the four arms below describe a topology this
- * deployment no longer has, and the copy says so rather than sending an operator
- * to rotate a secret that does not exist.
+ * authenticates. There is no model credential in this Worker at all, so the
+ * `credential` arm below describes something that should not be able to happen
+ * here, and its copy says so rather than sending an operator to rotate a secret
+ * that does not exist.
  *
  * The `Record` stays total because core made it total on purpose: a kind added
- * upstream must fail to compile here rather than fall through to silence.
+ * upstream must fail to compile here rather than fall through to silence. That
+ * cuts both ways — this file had to change when core *removed* one, which is
+ * exactly the intended behaviour.
  */
 const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
   credential: [
@@ -46,18 +48,6 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
     "  1. The Cloudflare status page, for a Workers AI or AI Gateway incident.",
     "  2. Whether the account still has Workers AI enabled and is not past a billing limit.",
     "  3. `npm run cf -- ai --since 1h` — the gateway log records what the request actually returned.",
-    "",
-    "Then send this request again. Nothing was changed in the repository."
-  ].join("\n"),
-
-  "proxy-credential": [
-    "I could not reach the model: something between this Worker and the provider rejected the request.",
-    "",
-    "This deployment has no such intermediary. The coder used to call Claude through a proxy Worker that held the Anthropic credential; that path was removed, and the agent now calls Workers AI through the `AI` binding directly.",
-    "",
-    "So this almost certainly means a stale deployment is still serving — an old version of this Worker, or a preview alias pointing at one. An operator should confirm what is actually deployed:",
-    "",
-    "    npx wrangler deployments list",
     "",
     "Then send this request again. Nothing was changed in the repository."
   ].join("\n"),
