@@ -1,4 +1,8 @@
 import { DurableObject, tracing } from "cloudflare:workers";
+// One Durable Object has one alarm, and this object wakes for five different
+// reasons. `WakeMap` is the multiplexer; what it does *not* own is what this
+// object owes on waking, which is `#dispatch` below.
+import { WakeMap, type WakeIntent } from "@loopingai/core/alarm";
 import {
   Workspace,
   type DurableObjectStorageLike,
@@ -12,47 +16,48 @@ import {
   CloudflareContainerBackend,
   withWorkspaceContainer
 } from "@cloudflare/computer/backends/container";
+import {
+  createGitClient,
+  type AuthCallback,
+  type GitClient
+} from "@cloudflare/computer/git";
 import { createCloudflareObserver } from "@cloudflare/computer/observe/cloudflare";
 import {
   installFingerprint,
+  pathExists,
   resolveInstallCommand,
+  truncateOutput,
   type InstallProbe,
   type InstallState
 } from "@loopingai/plugins/computer";
+// The shape `/repo` already defines for exactly this: a git failure is data,
+// because it means git answered. A throw on this path means the object was
+// unreachable, which is a different thing and must stay distinguishable.
+import type { RepoGitResult } from "@loopingai/plugins/repo";
 import { INSTALL_PLAN } from "./install";
 
 /**
  * The coder's workspace: one Durable Object, one container, one repository.
  *
- * This is the substrate the whole agent stands on, and the shape is forced
- * rather than chosen. `@cloudflare/computer` pairs a SQLite-backed virtual
- * filesystem in *this* object's storage with a container running `computerd`,
- * which mounts that filesystem over FUSE at `/workspace`. Commands run in the
- * container against the same tree the Worker reads over RPC, and the tree
- * outlives the container — which is the entire reason this replaced
+ * `@cloudflare/computer` pairs a SQLite-backed virtual filesystem in *this*
+ * object's storage with a container running `computerd`, which mounts it over
+ * FUSE at `/workspace`. Commands run against the same tree the Worker reads over
+ * RPC, and the tree outlives the container — which is why this replaced
  * `@cloudflare/sandbox`, whose disk died with the container and whose R2
  * snapshot path needed S3 credentials a Workers binding cannot supply.
  *
- * **One repository per object.** `computer` is strictly 1 DO ↔ 1 container, so
- * the id is derived from caller *and* repository — see `workspaceName` below.
- * Two repositories for one caller are two objects, two containers and two
- * filesystems, which is also the answer to "never mix repos".
+ * **One repository per object**, because `computer` is strictly 1 DO ↔ 1
+ * container: the id derives from caller *and* repository (see `workspaceName`),
+ * so two repositories for one caller are two objects and two containers.
  *
- * ## Why this constructs `Workspace` instead of using `withWorkspace`
- *
- * `withWorkspace(Base, options)` is the documented shortcut and it is a fine
- * default — but it stores the `Workspace` under a module-private symbol that the
- * package does not export, so a method on the object cannot reach it. That
- * matters here because two things the host is *required* to do live on
- * `Workspace` and are absent from the `WorkspaceClient` the mixin hands back:
- * `retryPendingSync`, which the library explicitly cannot drive itself ("the
- * library does not own your DO's alarm"), and the direct `runtime` access the
- * detached install needs.
- *
- * So the object owns the `Workspace` and implements the one method the mixin
- * otherwise provides — `__getWorkspaceStub`, which is exactly what
- * `getWorkspace(stub)` calls across the DO boundary. Callers outside see no
- * difference.
+ * **It constructs `Workspace` rather than using `withWorkspace`.** The mixin
+ * stores the `Workspace` under a module-private symbol the package does not
+ * export, so a method on the object cannot reach it — and two things the host is
+ * required to do live there and are absent from the `WorkspaceClient` it hands
+ * back: `retryPendingSync` (the library "does not own your DO's alarm") and the
+ * direct `runtime` access the detached install needs. So this object owns the
+ * `Workspace` and implements the one method the mixin otherwise provides,
+ * `__getWorkspaceStub`. Callers outside see no difference.
  */
 
 /** Where every checkout lives, inside the container and in the VFS. */
@@ -75,32 +80,7 @@ export function workspaceName(callerKey: string, repo?: string): string {
   return repo ? `${callerKey}|${repo}` : `${callerKey}|<unassigned>`;
 }
 
-// --- the durable wake-up map ------------------------------------------------
-
-/**
- * One scheduled wake-up.
- *
- * A Durable Object has exactly **one** alarm, and this object needs it for more
- * than one thing: the sync-retry the library requires, and — in the steps that
- * follow — an install watchdog and idle reclamation. Multiplexing that by
- * calling `setAlarm` from each of them does not work; the last writer silently
- * wins, and losing the sync-retry means a subagent's edits stay stranded in a
- * container with nothing left to resume them.
- *
- * So every intent goes through {@link WakeMap}, which is the only thing in this
- * file that calls `setAlarm`.
- */
-interface WakeIntent {
-  /** Why we are waking. Namespaced, e.g. `sync-retry:container-shell`. */
-  key: string;
-  /** Epoch ms at which this intent becomes due. */
-  notBefore: number;
-  /** Retry counter, for the intents that carry one. */
-  attempt?: number;
-}
-
-/** Single storage row holding every intent. Small, and written atomically. */
-const WAKE_KEY = "wake";
+// --- what this object wakes for, and when ----------------------------------
 
 /** Where the current install's state lives, for `installStatus` to read. */
 const INSTALL_KEY = "install";
@@ -192,31 +172,25 @@ const CONTAINER_IDLE = "container-idle";
 /**
  * How long a container stays up after the last command **started**.
  *
- * There is no `sleepAfter` here to lean on. `withWorkspaceContainer` wraps the
- * runtime's raw `ctx.container` rather than `@cloudflare/containers`'
- * `Container`, so idle shutdown is ours to schedule.
+ * No `sleepAfter` to lean on: `withWorkspaceContainer` wraps the runtime's raw
+ * `ctx.container`, not `@cloudflare/containers`' `Container`, so idle shutdown is
+ * ours to schedule.
  *
- * ## This must exceed the longest command the shell allows
+ * **This must exceed the longest command the shell allows**, and breaking that
+ * kills work in flight. The idle clock is armed by `#touch()` on the way *into*
+ * this object; a command touches once and then nothing touches again until it
+ * finishes, since `handle.result()` is one long await and the FUSE traffic under
+ * it never surfaces as an RPC. So the window is measured from when a command
+ * starts, not when it ends.
  *
- * The invariant is the whole reason this constant is not smaller, and breaking
- * it is not a tuning mistake — it kills work in flight.
+ * At the previous ten minutes that window was **exactly** the computer plugin's
+ * `DEFAULT_TIMEOUT_MS` — two timers of the same length started moments apart,
+ * and whichever fired first destroyed the container the other depended on.
+ * Reported as "repeated exec-backend crashes/restarts": `npm run check` (28 s
+ * measured) always survived, a full `npm test` never did.
  *
- * The idle clock is armed by `#touch()`, which runs when something calls *into*
- * this object. A command does that once, on the way in, and then nothing
- * touches the workspace again until it finishes: `handle.result()` is one long
- * await, and the FUSE traffic underneath it never surfaces as an RPC anything
- * here can see. So the idle window is measured from the moment a command
- * starts, not from the moment it ends.
- *
- * At the previous value of ten minutes that window was **exactly** the computer
- * plugin's own `DEFAULT_TIMEOUT_MS`, which is the ceiling on a single
- * `sb_exec`. Two timers of the same length, started moments apart, and the one
- * that fires first destroys the container the other depends on. The symptom was
- * reported as "repeated exec-backend crashes/restarts": `npm run check` (28 s
- * measured) always survived and a full `npm test` never did.
- *
- * Twenty minutes is double that ceiling, so no command can outlive it. Raise it
- * again — do not lower it — if `sb_exec` is ever given a longer timeout.
+ * Twenty minutes is double that ceiling. Raise it — never lower it — if
+ * `sb_exec` is ever given a longer timeout.
  */
 const CONTAINER_IDLE_MS = 20 * 60_000;
 
@@ -239,83 +213,6 @@ const STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
  * instead of starting a second `npm ci` alongside the first.
  */
 const INSTALL_EXEC_ID = "dependency-install";
-
-/** How far out to re-arm when the handler itself failed and we want a retry. */
-const WAKE_REPAIR_MS = 60_000;
-
-class WakeMap {
-  readonly #storage: DurableObjectStorage;
-
-  constructor(storage: DurableObjectStorage) {
-    this.#storage = storage;
-  }
-
-  async all(): Promise<Record<string, WakeIntent>> {
-    return (
-      (await this.#storage.get<Record<string, WakeIntent>>(WAKE_KEY)) ?? {}
-    );
-  }
-
-  async get(key: string): Promise<WakeIntent | undefined> {
-    return (await this.all())[key];
-  }
-
-  async set(intent: WakeIntent): Promise<void> {
-    const all = await this.all();
-    all[intent.key] = intent;
-    await this.#storage.put(WAKE_KEY, all);
-    await this.rearm();
-  }
-
-  async clear(key: string): Promise<void> {
-    const all = await this.all();
-    if (!(key in all)) return;
-    delete all[key];
-    await this.#storage.put(WAKE_KEY, all);
-    await this.rearm();
-  }
-
-  /** Every intent whose time has come, earliest first. */
-  async due(now: number): Promise<WakeIntent[]> {
-    return Object.values(await this.all())
-      .filter((intent) => intent.notBefore <= now)
-      .sort((a, b) => a.notBefore - b.notBefore);
-  }
-
-  /**
-   * Point the alarm at the earliest deadline.
-   *
-   * Only ever moved **earlier**, never later: an alarm that fires too soon finds
-   * nothing due, re-arms, and costs one wake-up, whereas an alarm pushed later
-   * by a coincidental write silently delays whatever was already waiting. When
-   * no intents remain the alarm is deleted outright, so an idle object does not
-   * wake on a schedule it has no use for.
-   */
-  async rearm(): Promise<void> {
-    const deadlines = Object.values(await this.all()).map((i) => i.notBefore);
-    const existing = await this.#storage.getAlarm();
-
-    if (deadlines.length === 0) {
-      if (existing !== null) await this.#storage.deleteAlarm();
-      return;
-    }
-
-    const earliest = Math.min(...deadlines);
-    if (existing === null || existing > earliest) {
-      await this.#storage.setAlarm(earliest);
-    }
-  }
-
-  /**
-   * Re-arm shortly, for when the handler failed before it could work out what
-   * it owed. Distinct from {@link rearm} because that one trusts the map, and
-   * the map is what we just failed to read.
-   */
-  async repair(now: number): Promise<void> {
-    const existing = await this.#storage.getAlarm();
-    if (existing === null) await this.#storage.setAlarm(now + WAKE_REPAIR_MS);
-  }
-}
 
 /** The wake key for one backend's pending pull. */
 const syncRetryKey = (backend: string): string => `sync-retry:${backend}`;
@@ -381,23 +278,31 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
    * The container backend.
    *
    * `container: () => this` hands the backend this object's own container.
-   * `workspace` is how `computerd` dials *back* in: the runtime builds a
-   * loopback binding from the exported `WorkspaceProxy` class and these two
-   * values, which is why `src/index.ts` re-exports `WorkspaceProxy` and why
-   * dropping that export breaks the container with no compile error.
+   * `workspace` is how `computerd` dials *back* in: the runtime builds a loopback
+   * binding from the exported `WorkspaceProxy` class and these two values, which
+   * is why `src/index.ts` re-exports it and why dropping that export breaks the
+   * container with no compile error.
    *
    * Nothing sets `egressHost`; the default `computer.internal` is the host the
-   * container's outbound HTTP is intercepted on, and it is internal to that
-   * loopback. (The upstream example on `main` passes `egress: { mode: "direct" }`
-   * — that option does not exist in the published 0.1.1, whose typings carry
-   * `egressHost` instead. `main` is ahead of the registry.)
+   * container's outbound HTTP is intercepted on, internal to that loopback.
+   *
+   * `egress` is **required in practice**, and its absence is silent. 0.1.1
+   * launched every container with `enableInternet: true` hardcoded; 0.2.0 made it
+   * a policy defaulting to `{ mode: "none" }`, and the backend derives the flag
+   * from it. Omit this and the container comes up with no network at all: the
+   * workspace mounts, commands run, and the install dies on a registry it cannot
+   * reach with nothing naming egress as the cause. `direct` is the behaviour this
+   * agent has always had, stated explicitly now that it must be. (`http-gateway`
+   * is the narrower option — every outbound request through a Fetcher this Worker
+   * supplies. An allowed-host policy is future work.)
    */
   readonly backend = new CloudflareContainerBackend({
     container: () => this,
     workspace: {
       binding: "CODER_WORKSPACE",
       id: this.ctx.id.toString()
-    }
+    },
+    egress: { mode: "direct" }
   });
 
   readonly #workspace = new Workspace(this.#workspaceOptions());
@@ -418,7 +323,31 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
       // the same Workers Observability view the rest of this Worker traces to.
       // Needs `observability.traces.enabled` in wrangler.jsonc; without the
       // feature flag `tracing` is undefined and this degrades to a no-op.
-      observer: createCloudflareObserver({ tracing })
+      observer: createCloudflareObserver({ tracing }),
+      // Git, running **here** rather than in the container.
+      //
+      // This is what lets the forge token stay on this side of the boundary.
+      // `createGitClient` binds isomorphic-git to `provider()` — the local
+      // SQLite store, not the wire — so a clone, fetch or push executes next to
+      // the data it writes, and the container never holds a credential at all.
+      // The alternative it replaces ran credentialed `git` in the container and
+      // had to build a disposable git dir per operation to survive the fact that
+      // git executes whatever `.git/config` and `.git/hooks` name.
+      //
+      // Needs `@platformatic/vfs`, an optional peer of `@cloudflare/computer`:
+      // the adapter that wraps `provider()` into an isomorphic-git FsClient
+      // imports it lazily and throws a named error when it is absent.
+      git: createGitClient(),
+      // Only the commit-producing subcommands read this, and the three
+      // operations driven from here — clone, fetch, push — are not among them.
+      // Set anyway so that a `pull` or `merge` added later fails on the merge
+      // itself rather than on `MissingIdentityError`, and set to the same pair
+      // `/repo` writes into the checkout's own config at clone time, so a commit
+      // cannot be attributed differently depending on which side made it.
+      defaultGitIdentity: {
+        name: "looping-coder",
+        email: "coder@looping.invalid"
+      }
     };
   }
 
@@ -466,35 +395,215 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
   }
 
   /**
+   * Clone, fetch and push — the three operations that need the forge token.
+   *
+   * They live here rather than on the `WorkspaceStub` the plugin already holds
+   * because `WorkspaceGitStub` exposes only `cli(argv)` across a Durable Object
+   * boundary, and argv cannot carry an `onAuth` callback. Routed through here,
+   * the credential is read from *this* object's `env` and never crosses an RPC
+   * boundary, never appears in an argument list, and never enters the container.
+   *
+   * That last clause is the point. The previous arrangement ran credentialed
+   * `git` inside the container and built a disposable bare git dir per operation,
+   * because git executes whatever `.git/config` and `.git/hooks` name and the
+   * model has a root shell on that filesystem. It closed the durable form of the
+   * attack but not the window where the token sat in a container process's
+   * environment, readable through `/proc`. isomorphic-git runs here and has no
+   * hooks, no `ext::` transport, no template directory and no credential helpers.
+   *
+   * Each takes `url` explicitly rather than a remote name: resolving `origin`
+   * would read `.git/config`, a workspace file a co-installed shell tool can
+   * write.
+   */
+  async gitClone(req: {
+    url: string;
+    dir: string;
+    allowedHosts: string[];
+    branch?: string;
+    depth?: number;
+  }): Promise<RepoGitResult> {
+    return this.#git(req.allowedHosts, async (git, onAuth) => {
+      // Spelled out rather than `git.clone`, and the reason is the credential.
+      //
+      // `clone` is the one network operation the client does not give an
+      // `onAuth` callback — it authenticates only through a `headers` option,
+      // which means attaching the token to the very first request to a URL the
+      // *model* chose. Composing the same work out of `fetch` puts every
+      // credentialed request on this side of `onAuth` instead, where the host is
+      // checked at the moment the token would be handed over. The cost is four
+      // calls instead of one; `clone` is these four.
+      await git.init({ dir: req.dir });
+      await git.remoteAdd({
+        dir: req.dir,
+        name: "origin",
+        url: req.url,
+        force: true
+      });
+      const fetched = await git.fetch({
+        url: req.url,
+        dir: req.dir,
+        onAuth,
+        // `depth: 0` means full history to isomorphic-git, so a caller that
+        // asked for nothing gets the shallow default rather than the whole repo.
+        depth: req.depth ?? 1,
+        singleBranch: true,
+        tags: false,
+        ...(req.branch ? { ref: req.branch } : {})
+      });
+      const landed =
+        req.branch ?? fetched.defaultBranch?.replace(/^refs\/heads\//, "");
+      if (!landed)
+        throw new Error(
+          `cloned ${req.url} but the remote named no default branch to check out`
+        );
+      await git.checkout({ dir: req.dir, ref: landed });
+      // What a real `git clone` writes and the container's git will look for:
+      // without it the branch tracks nothing, and a subagent reaching for a bare
+      // `git status` in the shell sees a branch with no upstream.
+      await git.configSet({
+        dir: req.dir,
+        path: `branch.${landed}.remote`,
+        value: "origin"
+      });
+      await git.configSet({
+        dir: req.dir,
+        path: `branch.${landed}.merge`,
+        value: `refs/heads/${landed}`
+      });
+      return landed;
+    });
+  }
+
+  async gitFetch(req: {
+    url: string;
+    dir: string;
+    allowedHosts: string[];
+    depth?: number;
+  }): Promise<RepoGitResult> {
+    return this.#git(req.allowedHosts, async (git, onAuth) => {
+      const result = await git.fetch({
+        url: req.url,
+        dir: req.dir,
+        onAuth,
+        prune: true,
+        tags: false,
+        singleBranch: false,
+        ...(req.depth ? { depth: req.depth } : {})
+      });
+      return `fetched ${req.url} (default branch ${result.defaultBranch ?? "unknown"})`;
+    });
+  }
+
+  async gitPush(req: {
+    url: string;
+    dir: string;
+    branch: string;
+    allowedHosts: string[];
+  }): Promise<RepoGitResult> {
+    return this.#git(req.allowedHosts, async (git, onAuth) => {
+      const result = await git.push({
+        url: req.url,
+        dir: req.dir,
+        ref: req.branch,
+        remoteRef: req.branch,
+        onAuth
+        // No `force`, ever, and not a knob: `/repo` refuses anything but a plain
+        // branch name precisely so that a push cannot be turned into a force
+        // push, and this is the other end of that promise.
+      });
+      // isomorphic-git reports a rejected push in the *result* rather than by
+      // throwing — a non-fast-forward comes back `ok: false` with the reason on
+      // the ref. Reading only the absence of an exception would report every
+      // rejected push as a success, in the one plugin whose entire theme is that
+      // a failed command is not a completed operation.
+      if (!result.ok) {
+        const perRef = Object.entries(result.refs)
+          .filter(([, status]) => !status.ok)
+          .map(([ref, status]) => `${ref}: ${status.error ?? "rejected"}`)
+          .join("; ");
+        throw new Error(
+          result.error ?? perRef ?? "the remote rejected the push"
+        );
+      }
+      return `pushed ${req.branch} to ${req.url}`;
+    });
+  }
+
+  /**
+   * The shared body: entry-point bookkeeping, the credential, and the translation
+   * back into something that survives RPC.
+   *
+   * A thrown `GitError` loses its prototype crossing a Durable Object boundary,
+   * so `instanceof` on the far side is not available and the caller would be left
+   * pattern-matching a string. The `code` is lifted here, while the error is
+   * still itself, and travels as data.
+   */
+  async #git(
+    allowedHosts: string[],
+    body: (git: GitClient, onAuth: AuthCallback) => Promise<string>
+  ): Promise<RepoGitResult> {
+    await this.#touch();
+    await this.#repairAlarm();
+    await this.#workspace.ready();
+
+    // Bound to the credential rather than checked before the call, which is
+    // strictly stronger: this is the moment the token would be handed over, and
+    // it sees the URL git actually authenticated against — including one it
+    // reached by redirect. A host nobody allowed gets no credential and the
+    // request fails unauthenticated, rather than the token being offered to it
+    // and *then* the mistake being noticed.
+    const onAuth: AuthCallback = (url) => {
+      let host: string;
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:") return {};
+        host = parsed.hostname;
+      } catch {
+        return {};
+      }
+      if (!allowedHosts.includes(host)) {
+        console.warn("[coder-workspace] refused to authenticate to a host", {
+          host
+        });
+        return {};
+      }
+      return { username: "x-access-token", password: this.env.GITHUB_TOKEN };
+    };
+
+    try {
+      return { ok: true, detail: await body(this.#workspace.git, onAuth) };
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      return {
+        ok: false,
+        ...(typeof code === "string" ? { code } : {}),
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
+  }
+
+  /**
    * Start a dependency install the moment we can see one will be needed.
    *
-   * ## The signal is `container.running`, and it is free
+   * The signal is `container.running`, and it is free: `node_modules` lives in
+   * the container and dies with it, so a stopped container plus a `done` record
+   * is not ambiguous — the tree that record describes is gone. The getter is
+   * synchronous, so the warm path costs one boolean and touches no storage.
    *
-   * `node_modules` lives in the container and dies with it. So a stopped container
-   * plus a record saying `done` is not ambiguous: the tree that record describes is
-   * gone. `ctx.container.running` is a synchronous getter, so the warm path — every
-   * call but the first of a cold task — costs one boolean and touches no storage.
+   * Armed here because `__getWorkspaceStub()` is reached before any command
+   * runs, which is the earliest honest moment in a task. The model spends its
+   * first minute reading the README and running `git status`, none of which
+   * needs dependencies — an install armed here runs *through* that minute, where
+   * one armed on the first `npm` command charges its full 85 seconds to that
+   * command.
    *
-   * ## Why here, and why not later
-   *
-   * `__getWorkspaceStub()` is reached before any command runs, which makes it the
-   * earliest honest moment in a task. That matters more than it looks: the model
-   * spends its first minute reading the README and running `git status`, none of
-   * which needs dependencies (see `needsDependencies` in the computer plugin). An
-   * install armed here runs *through* that minute. Armed on the first `npm` command
-   * instead, the same install would charge its full 85 seconds to that command, and
-   * the minute would have bought nothing.
-   *
-   * ## Why it writes `running` before anything is running
-   *
-   * The alarm has not fired yet, and a `done` record left in place would let an
-   * `npm` command through in the meantime, against a tree that is not there. This
-   * also makes the method self-limiting: the next call sees `running`, not `done`,
-   * and stops — so the busiest entry point in the object does at most one arming
-   * per cold container.
-   *
-   * The staleness bound in {@link #installState} covers the case where the alarm
-   * never fires, and `INSTALL_WATCH` covers an alarm that dies part-way.
+   * It writes `running` before anything is running because the alarm has not
+   * fired yet, and a `done` record would let an `npm` command through against a
+   * tree that is not there. That also makes the method self-limiting: the next
+   * call sees `running` and stops, so the busiest entry point in the object arms
+   * at most once per cold container. The staleness bound in {@link #installState}
+   * covers an alarm that never fires; `INSTALL_WATCH` covers one that dies
+   * part-way.
    */
   async #armInstallIfCold(): Promise<void> {
     // Running container: whatever the record says about `node_modules`, it is
@@ -650,14 +759,10 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
   #probe(): InstallProbe {
     const fs = this.#workspace.fs;
     return {
-      // The local `WorkspaceFilesystem` has no `exists` — that lives on the
-      // stub, which is what callers *outside* this object get. `stat` is the
-      // equivalent here, and a throw means absent.
-      exists: (path) =>
-        fs.stat(path).then(
-          () => true,
-          () => false
-        ),
+      // The plugin's own, which asks for the stub's `exists` and only falls back
+      // to `stat` when there is none — the local `WorkspaceFilesystem` here being
+      // exactly that case.
+      exists: (path) => pathExists(fs, path),
       readFile: (path) => fs.readFile(path, "utf8")
     };
   }
@@ -745,28 +850,23 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
     /**
      * One install at a time, and this guard is load-bearing.
      *
-     * `repo_clone` calls this, and a chunk that is retried calls it again —
-     * three times in fifty seconds, in the run that prompted this. Every call
-     * spawns with the same `INSTALL_EXEC_ID`, so each one displaced the last,
-     * and the displaced command's drain was still attached through
-     * `ctx.waitUntil`. That drain then wrote *its* outcome over a record
-     * describing an install that was still running perfectly well — a `failed`
-     * from a command that had been replaced, sitting on top of a live one.
-     *
-     * Which is exactly what came back from production: a "stale dependency
-     * install failed" that no amount of waiting would clear, because the thing
-     * it described was already gone.
+     * `repo_clone` calls this and a retried chunk calls it again — three times
+     * in fifty seconds, in the run that prompted this. Every call spawns with
+     * the same `INSTALL_EXEC_ID`, so each displaced the last, and the displaced
+     * command's drain was still attached through `ctx.waitUntil`. That drain
+     * then wrote *its* outcome over a record describing an install still running
+     * perfectly well, which came back from production as a "stale dependency
+     * install failed" no amount of waiting would clear.
      *
      * `#installState()` rather than a raw read, so this inherits the staleness
-     * bound and the re-attach: a `running` record left behind by a dead isolate
-     * is resolved here rather than blocking a legitimate retry forever.
+     * bound and the re-attach: a `running` record left by a dead isolate is
+     * resolved here rather than blocking a legitimate retry forever.
      *
-     * `takeOverArmedAt` is the one exemption, and it is narrow on purpose: the
-     * alarm's placeholder is a `running` record describing an install that has not
-     * started, so the alarm must be able to pass its own guard — and only its own.
-     * Matching on the exact `startedAt` it wrote (see {@link INSTALL_ARMED}) is
-     * what keeps that from becoming "take over any running install", which is the
-     * displacement bug above wearing a new hat.
+     * `takeOverArmedAt` is the one exemption, narrow on purpose. The alarm's
+     * placeholder is a `running` record for an install that has not started, so
+     * the alarm must pass its own guard — and only its own. Matching the exact
+     * `startedAt` it wrote is what stops that becoming "take over any running
+     * install", which is the displacement bug above in a new hat.
      */
     const current = await this.#installState();
     if (
@@ -935,6 +1035,21 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
    * in the alarm, which owns no request and outlives every RPC. Keep it that way:
    * **nothing that starts a long job belongs on this path.**
    */
+  /**
+   * Where the checkout actually is, as recorded when it was installed into.
+   *
+   * The repo plugin reports the authoritative path in `RepoCheckout.dir` and
+   * `startInstall` persists it. Callers outside this object would otherwise
+   * re-derive it from the repository name, which is a second spelling of one
+   * path and drifts the moment a clone lands anywhere but `<workdir>/<repo>`.
+   */
+  async checkoutDir(): Promise<string | undefined> {
+    const context = await this.ctx.storage.get<{ dir: string }>(
+      "install:context"
+    );
+    return context?.dir;
+  }
+
   async installStatus(): Promise<InstallState> {
     const state = await this.#installState();
     if (state.state !== "failed") return state;
@@ -1089,7 +1204,11 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
 
     try {
       const result = await handle.result();
-      const tail = (result.stdout + result.stderr).slice(-2000);
+      // Middle-out rather than a tail cut, and it marks what it dropped: an
+      // install's diagnosis is split between the two ends — the first error and
+      // the summary that follows it — and a plain `slice(-n)` silently keeps
+      // only the half that happens to be last.
+      const tail = truncateOutput(result.stdout + result.stderr, 2000);
       if (!(await stillMine())) return;
 
       if (result.exitCode === 0) {
@@ -1127,7 +1246,7 @@ export class CoderWorkspaceDO extends WorkspaceContainerBase {
           command,
           exitCode: result.exitCode,
           seconds: Math.round((Date.now() - startedAt) / 1000),
-          tail: tail.slice(-1000)
+          tail: truncateOutput(tail, 1000)
         });
         await this.#putInstall({
           state: "failed",

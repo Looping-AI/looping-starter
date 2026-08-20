@@ -8,6 +8,9 @@ import {
   GATEWAY_ORIGIN,
   TEST_AGENT_PRIVATE_JWK
 } from "@loopingai/core/testing/fixtures";
+// Node-realm half of the VCR harness: it reaches `node:fs` to read and write
+// cassettes, which workerd has no equivalent of.
+import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
 
 /**
  * The whole suite runs in the Workers runtime (workerd via miniflare) through a
@@ -41,12 +44,44 @@ process.env.ARC_API_KEY ??= "test-key";
 // Worker *to* AI Gateway, which is why it is listed on its own.
 process.env.GITHUB_TOKEN ??= "test-token";
 process.env.AI_GATEWAY_TOKEN ??= "test-token";
-// The pair naming this Worker and the proxy it calls. Public strings rather than
-// credentials, but secrets all the same because they are per-deployment, so they
-// are answered here like the rest. Nothing in the suite calls the proxy; these
-// only need to be well-formed origins.
-process.env.SELF_ORIGIN ??= "https://looping-starter.test";
-process.env.ANTHROPIC_PROXY_AUDIENCE ??= "https://proxy.test";
+// The proxy this Worker calls. A public string rather than a credential, but a
+// secret all the same because it is per-deployment, so it is answered here like
+// the rest. Nothing in the suite calls the proxy; it only needs to be a
+// well-formed origin.
+//
+// This Worker's *own* origin has no line here on purpose: core discovers it from
+// the `jku` on each turn, so there is nothing to answer — and a default here
+// would hide the case an operator actually hits.
+// The real origin, not a placeholder, and that is load-bearing for exactly one
+// spec: `recorded.spec.ts` dispatches at this value, so it is baked into the
+// cassette's match key (method + URL + body). Recording under a real origin and
+// replaying under `https://proxy.test` is a cassette miss that reads as a
+// missing recording. Answered here rather than left to a shell variable for the
+// same reason — a value only the recorder's machine has is a value replay does
+// not have.
+//
+// Safe to point at production: nothing reaches it without a cassette. The VCR
+// `outboundService` blocks every un-recorded fetch rather than forwarding it.
+process.env.ANTHROPIC_PROXY_ORIGIN ??= "https://anthropic-proxy.loopingai.org";
+
+/**
+ * The recorder, and the reason the suite cannot reach the network by accident.
+ *
+ * Every outbound fetch flows through this one Miniflare hook. With no active
+ * cassette it is **blocked** rather than forwarded, so a spec that grows a real
+ * HTTP call fails loudly instead of silently depending on someone's credentials
+ * and an internet connection.
+ *
+ * `outboundService` is the hook, never `fetchMock`: pool 0.20 removed that
+ * option, and an unknown key under `miniflare` is ignored rather than rejected —
+ * which is how a previous wiring of this failed silently.
+ */
+const vcr = createVcr({
+  snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
+  record: recordFromEnv(),
+  // What makes a cassette safe to commit, and why replay needs no credentials.
+  excludeHeaders: ["authorization", "x-api-key", "cookie", "set-cookie"]
+});
 
 export default defineConfig({
   resolve: {
@@ -65,6 +100,7 @@ export default defineConfig({
       // calls it, but nothing is attempted at test-file startup.
       remoteBindings: false,
       miniflare: {
+        outboundService: vcr.outboundService,
         // Test-only Durable Object bindings for the subagent facet classes.
         //
         // In production they need NO binding and NO `new_sqlite_classes` entry —
@@ -91,6 +127,9 @@ export default defineConfig({
     })
   ],
   test: {
-    include: ["test/**/*.spec.ts"]
+    include: ["test/**/*.spec.ts"],
+    // Node realm. Last chance to flush a cassette; each is already written when
+    // its test releases it, so this is only a safety net.
+    globalSetup: ["@loopingai/core/testing/vcr-global-setup"]
   }
 });

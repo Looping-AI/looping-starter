@@ -42,8 +42,12 @@ export class CoderSubagent extends RecipeSubagentHost<Env> {
    * would execute every delegated subtask on a different model than the round
    * that delegated it, and it would do so silently, because both satisfy
    * `ModelRuntime` and nothing downstream can tell them apart.
+   *
+   * A facet has no request path of its own, so its `requireSelfOrigin()` answers
+   * with what the parent passed on the chunk that started this execution — the
+   * same origin the parent signs with, by construction.
    */
   protected override modelRuntime(model: ModelConfig): ModelRuntime {
-    return coderModels(this.env, model);
+    return coderModels(() => this.requireSelfOrigin())(this.env, model);
   }
 }

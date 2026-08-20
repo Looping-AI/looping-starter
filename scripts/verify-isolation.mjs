@@ -56,7 +56,12 @@ const AGENTS = [
       "@cloudflare/computer",
       "@anthropic-ai/sdk"
     ],
-    maxBytes: 3_700_000
+    // Re-baselined when `splitting` was turned on above, not because this agent
+    // grew: the old number simply never counted the chunks it reaches through a
+    // dynamic `import()`. Measured 3687 KiB the first time it was weighed
+    // honestly, against a 3613 KiB ceiling it had been quietly over. ~8% over
+    // that measurement, the headroom every entry here runs with.
+    maxBytes: 4_080_000
   },
   {
     name: "proactive",
@@ -126,7 +131,17 @@ const AGENTS = [
     // the measured size, the same headroom the others run with. Raise it
     // deliberately, with the dependency bump that caused it, never to make a red
     // build go green.
-    maxBytes: 4_300_000
+    //
+    // Moved 4300 → 5450 KB in two steps, both deliberate and worth separating:
+    //   +111 KiB  turning on `splitting` — weight this agent already carried
+    //             through dynamic imports and this script could not see.
+    //   +608 KiB  `@cloudflare/computer/git` in the workspace DO, which bundles
+    //             isomorphic-git so that clone, fetch and push run on this side
+    //             of the container boundary and the forge token never crosses
+    //             it. Bought knowingly: it is the cost of the credential never
+    //             being readable by a shell the model controls.
+    // Measured 4918 KiB after both.
+    maxBytes: 5_450_000
   }
 ];
 
@@ -144,40 +159,73 @@ let leakFailed = false;
 let sizeFailed = false;
 
 for (const agent of AGENTS) {
-  const result = await build({
-    entryPoints: agent.entries.map((e) => path.join(root, e)),
-    bundle: true,
-    write: false,
-    metafile: true,
-    // Never written (`write: false`), but esbuild requires it whenever there is
-    // more than one entry point.
-    outdir: path.join(root, ".isolation-check"),
-    format: "esm",
-    // Resolve the way wrangler does. `platform: "neutral"` applies no export
-    // conditions at all, which makes perfectly-installed packages (`partyserver`,
-    // via `agents`) look unresolvable — and a check that cannot resolve the graph
-    // cannot measure it.
-    platform: "browser",
-    conditions: ["workerd", "worker", "browser", "import", "module", "default"],
-    mainFields: ["module", "main"],
-    target: "es2022",
-    external: EXTERNAL,
-    // Required, not cosmetic. The Agents SDK resolves a facet through
-    // `ctx.exports[this.constructor.name]`, so a build that minifies class
-    // identifiers turns `ArcPlayerSubagent` into `_a` and the lookup fails at
-    // runtime. Keeping names here also keeps this measurement honest against the
-    // real deploy, which does the same.
-    keepNames: true,
-    // Minified, so the ceiling is a number about the *deploy* rather than about
-    // source formatting. Unminified sizes drift with comments and would make the
-    // budget react to documentation.
-    minify: true,
-    absWorkingDir: root,
-    logLevel: "silent"
-  });
+  const results = [];
+  for (const entry of agent.entries)
+    results.push(
+      await build({
+        entryPoints: [path.join(root, entry)],
+        bundle: true,
+        write: false,
+        metafile: true,
+        // Never written (`write: false`), but esbuild requires it whenever a build
+        // can emit more than one file — which `splitting` makes true of all of them.
+        outdir: path.join(root, ".isolation-check"),
+        format: "esm",
+        // Load-bearing, and the reason this file once measured a lie.
+        //
+        // Without it esbuild cannot emit chunks, so a module reached only through a
+        // dynamic `import()` is parsed — it still appears in `metafile.inputs`, so
+        // the isolation half of this check always saw it — and then dropped from the
+        // output. `@cloudflare/computer/git` lazy-loads its bundled isomorphic-git
+        // exactly that way, and wiring it into the coder moved the real deploy by
+        // ~800 KiB while this script reported no change at all. A ceiling that
+        // cannot see the largest thing anyone has added to a bundle is not a
+        // ceiling.
+        //
+        // It is paired with building one entry point at a time below. `splitting`
+        // across all three at once would also hoist what they *share* into one
+        // chunk, which counts shared code once instead of once per entry and would
+        // silently redefine every ceiling in this file. One entry per build keeps
+        // the old scale and adds only what was missing.
+        splitting: true,
+        // Resolve the way wrangler does. `platform: "neutral"` applies no export
+        // conditions at all, which makes perfectly-installed packages (`partyserver`,
+        // via `agents`) look unresolvable — and a check that cannot resolve the graph
+        // cannot measure it.
+        platform: "browser",
+        conditions: [
+          "workerd",
+          "worker",
+          "browser",
+          "import",
+          "module",
+          "default"
+        ],
+        mainFields: ["module", "main"],
+        target: "es2022",
+        external: EXTERNAL,
+        // Required, not cosmetic. The Agents SDK resolves a facet through
+        // `ctx.exports[this.constructor.name]`, so a build that minifies class
+        // identifiers turns `ArcPlayerSubagent` into `_a` and the lookup fails at
+        // runtime. Keeping names here also keeps this measurement honest against the
+        // real deploy, which does the same.
+        keepNames: true,
+        // Minified, so the ceiling is a number about the *deploy* rather than about
+        // source formatting. Unminified sizes drift with comments and would make the
+        // budget react to documentation.
+        minify: true,
+        absWorkingDir: root,
+        logLevel: "silent"
+      })
+    );
 
-  const inputs = Object.keys(result.metafile.inputs);
-  const bytes = result.outputFiles.reduce((n, f) => n + f.contents.length, 0);
+  const inputs = [
+    ...new Set(results.flatMap((r) => Object.keys(r.metafile.inputs)))
+  ];
+  const bytes = results.reduce(
+    (n, r) => n + r.outputFiles.reduce((m, f) => m + f.contents.length, 0),
+    0
+  );
 
   const leaked = agent.forbidden.filter((needle) =>
     inputs.some((input) => input.includes(needle))

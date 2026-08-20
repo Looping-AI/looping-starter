@@ -1,5 +1,5 @@
 /**
- * One Worker, three agents.
+ * One Worker, four agents.
  *
  * The agents are **tenants** of one deployment, routed by `src/index.ts` on the
  * A2A `params.tenant` — they share one origin, one `/a2a` endpoint, one signed
@@ -17,6 +17,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
+  // Headroom for git, which now runs here rather than in the container.
+  //
+  // `@cloudflare/computer/git` is isomorphic-git: SHA-1 and inflate in
+  // JavaScript, on this Worker's CPU budget rather than a container's. Measured
+  // before setting this, shallow and single-branch — a 485-file repository
+  // clones in ~1.1 s and a 5,456-file monorepo in ~5.5 s wall-clock, most of it
+  // network — so the default 30 s is not close to binding. This is for the
+  // repository that is an order of magnitude past those, not for the ones that
+  // were measured; a clone that dies at 30 s costs a whole task.
+  "limits": { "cpu_ms": 300000 },
   "observability": {
     "enabled": true,
     // Traces, not just logs. The coder's workspace passes
@@ -232,15 +242,19 @@
   // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
   // from — a property of the deployment, like the key.
   //
-  // `SELF_ORIGIN` and `ANTHROPIC_PROXY_AUDIENCE` are listed here too, and they
-  // are the odd pair: both are public strings — they are origins — so nothing is
-  // being hidden. What they are is *per-deployment*. The origin naming this
-  // Worker and the one naming its proxy differ between production, staging and a
-  // fork, so a value committed to a public repository is a value every
-  // environment inherits and the wrong one ships by default. Configured rather
-  // than committed, they change per environment with no code change. The proxy
-  // treats its own half of the pair (`CALLER_ORIGINS`, `PROXY_AUDIENCE`) the
-  // same way.
+  // `ANTHROPIC_PROXY_ORIGIN` is listed here too, and it is the odd one: a public
+  // string — it is an origin — so nothing is being hidden. What it is is
+  // *per-deployment*. The origin naming this Worker's proxy differs between
+  // production, staging and a fork, so a value committed to a public repository
+  // is a value every environment inherits and the wrong one ships by default.
+  // Configured rather than committed, it changes per environment with no code
+  // change.
+  //
+  // Its counterpart is **not** here, and that is the point. This Worker's own
+  // origin used to be a `SELF_ORIGIN` secret next to it, restating the origin
+  // every request already arrives on; core discovers it now (`requireSelfOrigin`,
+  // from the `jku` that rides each turn), exactly as `looping-anthropic-proxy`
+  // discovers the audience it expects from `url.origin` rather than storing it.
   "secrets": {
     "required": [
       "A2A_SIGNING_KEY",
@@ -248,15 +262,18 @@
       "ARC_API_KEY",
       // coder only. `GITHUB_TOKEN` needs contents and pull-request write.
       //
-      // `SELF_ORIGIN` is this deployment's own public origin: the `iss` of the
-      // token the coder mints for the proxy, and the base of the `jku` pointing
-      // at the JWKS the proxy verifies against — so it must be the origin that
-      // actually serves `/.well-known/jwks.json`, and must appear in the proxy's
-      // `CALLER_ORIGINS` allowlist. `ANTHROPIC_PROXY_AUDIENCE` is the proxy's
-      // public URL, used as the token's `aud`; bounding the audience is what
-      // makes a captured token useless against any other service trusting this
-      // same signing key. A mismatch in either is refused at the proxy and
-      // surfaces as `proxy-credential`, not as a Claude problem.
+      // `ANTHROPIC_PROXY_ORIGIN` is the proxy's own public origin, which must be
+      // the hostname the gateway forwards to: the proxy stores no matching
+      // secret, it compares against its own request origin. A mismatch is
+      // refused at the proxy and surfaces as `proxy-credential`, not as a Claude
+      // problem.
+      //
+      // The other half of that agreement needs nothing here. The `iss` of the
+      // token the coder mints is this deployment's own origin, discovered from
+      // the request path and pinned per isolate, so what an operator has to get
+      // right is the proxy's `CALLER_ORIGINS`: it must contain the origin this
+      // Worker is registered and reached at, which is the same origin serving
+      // the `/.well-known/jwks.json` the proxy fetches.
       //
       // **There is no Claude credential here.** It lives in the
       // `looping-anthropic-proxy` Worker, which is the origin behind the
@@ -271,8 +288,7 @@
       // the coder calls a gateway URL directly. The other three agents go
       // through the `AI` binding, which the platform authenticates, so they
       // need nothing here.
-      "SELF_ORIGIN",
-      "ANTHROPIC_PROXY_AUDIENCE",
+      "ANTHROPIC_PROXY_ORIGIN",
       "GITHUB_TOKEN",
       "AI_GATEWAY_TOKEN"
     ]

@@ -14,7 +14,7 @@ import {
 import worker from "@/index";
 
 /**
- * Three agents, one Worker, one endpoint.
+ * Four agents, one Worker, one endpoint.
  *
  * This is the file that pins the architecture the rest of the repo assumes.
  * Every assertion here is about a fact that is *only* true because the agents
@@ -22,7 +22,7 @@ import worker from "@/index";
  * `createA2AWorker` and has nothing to check.
  */
 
-const TENANTS = ["reactive", "proactive", "arc-player"] as const;
+const TENANTS = ["reactive", "proactive", "arc-player", "coder"] as const;
 
 const get = (path: string) =>
   worker.fetch(new Request(`${AGENT_ORIGIN}${path}`), env);
@@ -175,9 +175,10 @@ describe("per-tenant cards", () => {
         return (await res.json<{ result: { name: string } }>()).result.name;
       })
     );
-    // Three agents, three identities. Sharing one would make them
-    // indistinguishable to a gateway registering them.
-    expect(new Set(names).size).toBe(3);
+    // One identity per agent. Sharing one would make them indistinguishable to
+    // a gateway registering them. Counted off `TENANTS` rather than a literal,
+    // which is what went stale when the fourth agent arrived.
+    expect(new Set(names).size).toBe(TENANTS.length);
   });
 });
 

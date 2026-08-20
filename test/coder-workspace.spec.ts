@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { makeDoHelpers } from "@loopingai/core/testing";
 import { getWorkspace } from "@cloudflare/computer";
 import type { InstallState } from "@loopingai/plugins/computer";
 import { INSTALL_PLAN } from "@/agents/coder/install";
@@ -25,15 +26,8 @@ import { INSTALL_PLAN } from "@/agents/coder/install";
  * way it failed in production.
  */
 
-const ns = () => env.CODER_WORKSPACE;
-
 /** A fresh workspace per test — DO storage never leaks between them. */
-function freshWorkspace(label: string) {
-  const namespace = ns();
-  return namespace.get(
-    namespace.idFromName(`test:${label}:${crypto.randomUUID()}`)
-  );
-}
+const { freshStub: freshWorkspace } = makeDoHelpers(env.CODER_WORKSPACE);
 
 /** Read the raw install record, bypassing `installStatus`'s own repair path. */
 function storedInstall(stub: DurableObjectStub) {

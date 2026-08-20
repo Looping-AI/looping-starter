@@ -5,7 +5,7 @@
 Zero-trust A2A, durable task lifecycle, delegation to isolated subagents, episodic
 memory. Clone it, generate keys, deploy.
 
-It ships **three example agents in one Worker** — grow the one you want, and
+It ships **four example agents in one Worker** — grow the one you want, and
 `npm run agent:remove` the rest. Adding or removing a capability is a single line.
 
 Everything here is an _example_. The round loop, the durable Subtask DAG, the
@@ -24,19 +24,29 @@ config, and the round contract.
 
 ```bash
 npm install
-npm run keygen          # one key for the deployment — see .dev.vars.example
+npm run keygen          # one key for the deployment — see .env.example
 npx wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=cosine
 ```
 
-Put the key and `GATEWAY_ORIGINS` in `.dev.vars` before starting — the Worker reads both
-on its first request ([`.dev.vars.example`](.dev.vars.example) documents every secret,
+Put the key and `GATEWAY_ORIGINS` in `.env` before starting — the Worker reads both
+on its first request ([`.env.example`](.env.example) documents every secret,
 including the coder-only ones):
 
 ```bash
 npm run dev
 ```
 
-To ship, set the same secrets with `wrangler secret put` and:
+Wrangler loads `.env`, then `.env.local`, then — with `--env <name>` — `.env.<name>`
+and `.env.<name>.local`, each overriding the last, so a staging deployment is
+`.env.staging` rather than an edit to `wrangler.jsonc`. Everything but `.env.example`
+is gitignored.
+
+> One caveat: if a `.dev.vars` file exists it wins outright and none of the above is
+> read. This project uses `.env`; keep a single file so there is never a question which
+> one is live.
+
+To ship, set the same secrets with `wrangler secret put` (or push the whole file with
+`npx wrangler deploy --secrets-file .env`) and:
 
 ```bash
 npm run deploy
@@ -206,18 +216,27 @@ changes to anything shared: `src/agents/coder/models.ts` exports one
 `@loopingai/core/anthropic`, and the round loop never learns which provider
 produced its `LanguageModel`.
 
-Four extra secrets, all coder-only — see `.dev.vars.example`:
+Three extra secrets, all coder-only — see `.env.example`:
 
 ```sh
-npx wrangler secret put SELF_ORIGIN              # this deployment's own origin
-npx wrangler secret put ANTHROPIC_PROXY_AUDIENCE # the looping-anthropic-proxy origin
-npx wrangler secret put GITHUB_TOKEN             # contents + PR write
-npx wrangler secret put AI_GATEWAY_TOKEN         # only if the gateway is authenticated
+npx wrangler secret put ANTHROPIC_PROXY_ORIGIN  # the looping-anthropic-proxy origin
+npx wrangler secret put GITHUB_TOKEN            # contents + PR write
+npx wrangler secret put AI_GATEWAY_TOKEN        # only if the gateway is authenticated
 ```
 
-The first two are origins, not credentials — they are secrets because they are
-per-deployment, and each must agree with its half of the proxy's own pair
-(`CALLER_ORIGINS`, `PROXY_AUDIENCE`). **No Claude credential is set here.** It
+The first is an origin, not a credential — it is a secret because it is
+per-deployment, and it must be the proxy's own public origin, which the proxy
+compares against each request rather than storing in a secret of its own.
+
+**This deployment's own origin is not one of them.** It is the `iss` of the token
+the coder mints, and it is the origin the request already arrived on, so core
+discovers it (`requireSelfOrigin()`, from the `jku` that rides every turn, pinned
+on the first turn an isolate serves) rather than reading a `SELF_ORIGIN` secret
+that restated it. What is left for an operator is on the proxy: its
+`CALLER_ORIGINS` must contain the origin this Worker is registered and reached at
+— the one serving the `/.well-known/jwks.json` it fetches.
+
+**No Claude credential is set here.** It
 lives in the proxy Worker, which is what holds `ANTHROPIC_TOKEN_PRIMARY` and
 `ANTHROPIC_TOKEN_FALLBACK`; this Worker authenticates to it with a 120-second
 token signed from `A2A_SIGNING_KEY`.
@@ -245,9 +264,10 @@ falling through.
 
 Only two of the three are rotations at all. The proxy credential is minted fresh
 per request, so a refusal there is never an expired secret — it means the two
-Workers disagree: `SELF_ORIGIN` is missing from the proxy's `CALLER_ORIGINS`,
-`ANTHROPIC_PROXY_AUDIENCE` does not match its `PROXY_AUDIENCE`, or
-`A2A_SIGNING_KEY` was rotated here while the JWKS at `SELF_ORIGIN` still serves
+Workers disagree: the origin this Worker is reached on is missing from the proxy's
+`CALLER_ORIGINS`, `ANTHROPIC_PROXY_ORIGIN` does not name the hostname the gateway
+forwards to (the proxy logs the origin it expected as `expectedAudience`), or
+`A2A_SIGNING_KEY` was rotated here while the JWKS this Worker serves still carries
 the old public key. That copy sends an operator to look, not to rotate.
 
 The gateway one is the easiest to misread. With **Authenticated Gateway** enabled
@@ -409,7 +429,7 @@ npx wrangler deploy --dry-run --outdir dist
 ```
 
 `verify:isolation` is the one that survives a refactor six months from now. This Worker
-deploys as **one bundle containing all three agents**, so grepping `dist/` for "arc-agi"
+deploys as **one bundle containing all four agents**, so grepping `dist/` for "arc-agi"
 would always find it and prove nothing. Instead each agent's entry is bundled on its own,
 and esbuild's **metafile** — the exact list of modules in the graph, not a string search —
 is checked for plugins that agent does not install:
@@ -449,7 +469,7 @@ a level-tallied timeline, `wf <name> <instance>` per-step pass/fail, `ai <logId>
 prompt and reply as text — with `--json` or `--raw` when you want the body. This Worker's
 workflows are `handle-task`, `arc-handle-task` and `notify-task`.
 
-The credentials go in `.cf.env`, not `.dev.vars`, because they are not bindings: they
+The credentials go in `.cf.env`, not `.env`, because they are not bindings: they
 authenticate **you** to the Cloudflare API, not the Worker to anything. Keeping them in
 their own file also keeps the token off wrangler's dotenv path, so it is never loaded into
 the Worker's env or uploaded as a secret. The script reads the file itself and holds the

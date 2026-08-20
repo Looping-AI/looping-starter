@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
 import { TaskState } from "@a2a-js/sdk";
-import type { GatewayIdentity } from "@loopingai/core/a2a";
+import type { GatewayIdentity, PlainTask } from "@loopingai/core/a2a";
 import { env } from "cloudflare:workers";
 import type { ProactiveAgent } from "@/agents/proactive/agent";
 import { proactive } from "@/agents/proactive/definition";
@@ -72,6 +72,7 @@ interface FakeAgentOptions {
 
 function fakeAgent(options: FakeAgentOptions = {}) {
   const calls: string[] = [];
+  const saved: PlainTask[] = [];
   const stub = {
     async markWorking() {
       calls.push("markWorking");
@@ -89,12 +90,13 @@ function fakeAgent(options: FakeAgentOptions = {}) {
         }
       };
     },
-    async saveTask() {
+    async saveTask(task: PlainTask) {
       calls.push("saveTask");
+      saved.push(task);
       return options.saveTask ?? true;
     }
   } as unknown as DurableObjectStub<ProactiveAgent>;
-  return { stub, calls };
+  return { stub, calls, saved };
 }
 
 function params(taskId: string) {
@@ -175,6 +177,33 @@ describe("the ordinary path", () => {
     });
 
     expect(ran).toEqual(["working", "generate", "complete", "notify"]);
+  });
+});
+
+/**
+ * The third terminal shape, and the one core's own round loop has no equivalent
+ * of — which is why `deliverTerminalTask` takes the Task from its caller rather
+ * than choosing between two itself.
+ */
+describe("a turn that deliberately says nothing", () => {
+  it("still completes and still calls back, carrying no message", async () => {
+    const { stub, saved } = fakeAgent({ saveTask: true });
+    const { step, ran } = fakeStep({
+      cached: { generate: { kind: "no_reply" }, notify: undefined }
+    });
+
+    await runNotifyTask(params("t4"), step, {
+      resolveAgent: () => stub,
+      signingKey: env.A2A_SIGNING_KEY
+    });
+
+    // No shortcut to the end: the gateway's pending row has to resolve whether
+    // or not there is anything to say, so this path runs the same four steps.
+    expect(ran).toEqual(["working", "generate", "complete", "notify"]);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+    // Completed, but with nothing to post.
+    expect(saved[0].status?.message).toBeUndefined();
   });
 });
 

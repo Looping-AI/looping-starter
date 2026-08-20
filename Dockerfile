@@ -21,7 +21,7 @@
 # A single layer over `scratch` holding one file: the 126 MB SEA binary at
 # /usr/local/bin/computerd. Nothing else is in this image, so it is a staging
 # stage and never a base.
-FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.1.1 AS computerd
+FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.2.1 AS computerd
 
 # `debian:stable-slim`, matching the upstream reference recipe
 # (examples/container/Dockerfile) exactly — and the base is the load-bearing

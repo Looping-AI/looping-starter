@@ -36,7 +36,7 @@ export { CoderWorkspaceDO } from "./agents/coder/workspace-do";
 export { WorkspaceProxy } from "@cloudflare/computer";
 
 /**
- * One Worker, three agents, addressed by A2A `tenant`.
+ * One Worker, four agents, addressed by A2A `tenant`.
  *
  * They share one origin, one endpoint, one signing key and one card:
  *

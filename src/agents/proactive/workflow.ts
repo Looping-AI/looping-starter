@@ -1,10 +1,11 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import { CHUNK_STEP } from "@loopingai/core";
 import {
   buildCompletedTask,
   buildFailedTask,
   buildNoReplyCompletedTask,
-  createPushChannel,
+  deliverTerminalTask,
   type GatewayIdentity
 } from "@loopingai/core/a2a";
 import type { ProactiveAgent } from "./agent";
@@ -89,14 +90,17 @@ export async function runNotifyTask(
   step: WorkflowStep,
   deps: NotifyTaskDeps
 ): Promise<void> {
-  const stub = deps.resolveAgent(p.identity);
+  // Resolved **inside** each step body, never once up here. A stub is a live
+  // connection; a severed one never reconnects, so a workflow that hoisted it
+  // spent the rest of its retries talking to a socket that was already gone.
+  const agent = () => deps.resolveAgent(p.identity);
 
   // A Task canceled before this workflow got going stops here, before a single
   // model call is billed. `markWorking` reports the cancellation itself rather
   // than being probed for it, so there is no window between asking and acting.
   const started = await step.do(
     "working",
-    async () => (await stub.markWorking(p.taskId)) === "ok"
+    async () => (await agent().markWorking(p.taskId)) === "ok"
   );
   if (!started) return;
 
@@ -104,8 +108,8 @@ export async function runNotifyTask(
   // failure — it reports one as `failed` — so a throw here is a genuine RPC
   // fault. The push context lets the DO stream intermediate `working` callbacks
   // live during generation; this step returns only how the turn ended.
-  const outcome = await step.do("generate", async () => {
-    const result = await stub.converse(p.text, p.identity, {
+  const outcome = await step.do("generate", CHUNK_STEP, async () => {
+    const result = await agent().converse(p.text, p.identity, {
       taskId: p.taskId,
       contextId: p.contextId,
       pushUrl: p.pushUrl,
@@ -124,40 +128,31 @@ export async function runNotifyTask(
   // message to post. A failed turn must call back as `failed`: A2A v1.0 has no
   // structured task error, so the terminal state is the only signal the gateway
   // has that the turn broke.
-  const task =
-    outcome.kind === "no_reply"
-      ? buildNoReplyCompletedTask(p.taskId, p.contextId)
-      : outcome.kind === "failed"
-        ? buildFailedTask(p.taskId, p.contextId, outcome.text)
-        : buildCompletedTask(p.taskId, p.contextId, outcome.text);
-
-  // Persist the terminal task, unless the caller canceled it meanwhile.
   //
-  // **The guarded write is the cancellation check.** `saveTask` refuses to write a
-  // terminal state over a `canceled` row and says so, doing that read and write in
-  // one synchronous pass inside the DO. Probing with `getTask` first and saving
-  // second would leave a window — between the two calls, and again between this
-  // step and `notify` — in which a `CancelTask` lands and the gateway still
-  // receives a `completed` callback. Keying the notify on "did the write apply"
-  // closes it.
-  const saved = await step.do("complete", async () => stub.saveTask(task));
-  if (!saved) return;
-
-  // Notify the gateway: a card-key-signed callback POST. Retried by the step on a
-  // non-2xx; the gateway is idempotent/single-use, so retries are safe. If it
-  // ultimately fails, the gateway's own reaction backstop clears the pending
-  // marker.
-  //
-  // Signed with the deployment's key. There is one: the card sits at a
-  // well-known URI, which RFC 8615 defines per-authority, so this origin
-  // publishes one card and the gateway pins one key for every agent on it.
-  await step.do("notify", async () => {
-    await createPushChannel(deps.signingKey, {
+  // The persist-then-notify pair is core's, and the guarded write inside it is
+  // the cancellation check. No `sweep`: this agent delegates to nothing, so it
+  // has no managed children to reclaim.
+  await deliverTerminalTask(step, {
+    push: {
       taskId: p.taskId,
       contextId: p.contextId,
       pushUrl: p.pushUrl,
       pushToken: p.pushToken,
       jku: p.jku
-    }).deliver(task);
+    },
+    // One key per deployment: the card sits at a well-known URI, which RFC 8615
+    // defines per-authority, so this origin publishes one card and the gateway
+    // pins one key for every agent on it.
+    signingKey: deps.signingKey,
+    saveTask: (task) => agent().saveTask(task),
+    // Built inside the `complete` step by the helper. Building it out here would
+    // re-stamp `new Date()` on every replay, so `notify` would post a Task that
+    // differs from the one actually stored.
+    terminal: () =>
+      outcome.kind === "no_reply"
+        ? buildNoReplyCompletedTask(p.taskId, p.contextId)
+        : outcome.kind === "failed"
+          ? buildFailedTask(p.taskId, p.contextId, outcome.text)
+          : buildCompletedTask(p.taskId, p.contextId, outcome.text)
   });
 }

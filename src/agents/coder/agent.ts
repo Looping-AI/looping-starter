@@ -15,7 +15,7 @@ import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { activeRepo } from "./active-repo";
 import { coderModels } from "./models";
-import { parentPlugins } from "./plugins";
+import { container, parentPlugins } from "./plugins";
 import { workspaceName, WORKSPACE_DIR } from "./workspace-do";
 import { soulPrompt } from "./soul";
 import { CoderSubagent } from "./subagent";
@@ -59,9 +59,14 @@ export class CoderAgent extends RoundAgentBase<Env> {
    * Run on Claude instead of Workers AI — see `./models.ts`, which
    * `CoderSubagent` returns from the same seam. One definition, so the parent
    * and its facet cannot drift onto different providers.
+   *
+   * `requireSelfOrigin()` is core's: this deployment's own origin, learned from
+   * the `jku` every turn carries, and the `iss` of the token minted for the
+   * proxy. Passed as a thunk because it is read per model call, and a runtime is
+   * built before the first turn reaches this instance.
    */
   protected override modelRuntime(model: ModelConfig): ModelRuntime {
-    return coderModels(this.env, model);
+    return coderModels(() => this.requireSelfOrigin())(this.env, model);
   }
 
   /**
@@ -151,16 +156,24 @@ export class CoderAgent extends RoundAgentBase<Env> {
     await super.onTaskCanceled(taskId);
     try {
       const host = this.pluginHost();
-      const exec = computerExec({
-        binding: this.env.CODER_WORKSPACE,
-        workspaceName: () =>
-          workspaceName(this.identityKeyOrTask(taskId), activeRepo(host).get())
-      });
+      const active = activeRepo(host);
+      const name = workspaceName(this.identityKeyOrTask(taskId), active.get());
+      // The same settings the tools run under — `shell: "bash"` above all, which
+      // a partial copy of this config used to drop.
+      const exec = computerExec(container(this.env, () => name));
+      // The path the checkout is actually at, as the repo plugin reported it.
+      // Falling back to the conventional layout only when nothing has installed
+      // yet, in which case there is no working tree to discard either.
+      const dir =
+        (await this.env.CODER_WORKSPACE.get(
+          this.env.CODER_WORKSPACE.idFromName(name)
+        ).checkoutDir()) ??
+        `${WORKSPACE_DIR}/${active.get()?.split("/")[1] ?? "repo"}`;
       // Best-effort and deliberately not fatal: `git clean` on a checkout that
       // does not exist yet is a no-op, and a cancellation must complete either
       // way.
       await exec("git reset --hard && git clean -fd -e node_modules", {
-        cwd: `${WORKSPACE_DIR}/${activeRepo(host).get()?.split("/")[1] ?? "repo"}`
+        cwd: dir
       });
     } catch (err) {
       console.warn("[coder] could not discard the working tree on cancel", {

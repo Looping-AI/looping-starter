@@ -1,120 +1,75 @@
-import { importJWK, SignJWT, type JWK } from "jose";
-import {
-  A2A_JWS_ALG,
-  IDENTITY_CLAIM,
-  TENANT_CLAIM,
-  jwksUrl,
-  parsePrivateJwk
-} from "@loopingai/core/a2a";
+import { signCallerToken } from "@loopingai/core/a2a";
 
 /**
  * The credential this Worker presents to `looping-anthropic-proxy`.
  *
- * ## Why a signed token and not a shared secret
+ * **A signed token, not a shared secret.** Behind an AI Gateway custom provider
+ * the only thing surviving the hop is `Authorization`: the gateway strips
+ * `cf-aig-authorization`, Access strips its own JWT, and source IP proves
+ * nothing because AI Gateway egresses from the same network as every other
+ * Worker. So `Authorization` carries the whole trust decision, and a static
+ * secret there would be replayable forever once captured and rotatable only by
+ * redeploying two Workers in lockstep. The proxy verifies this against a public
+ * JWKS instead, so it stores no shared secret at all.
  *
- * The proxy sits behind an AI Gateway custom provider, and the only thing that
- * survives that hop is `Authorization` — the gateway consumes and strips
- * `cf-aig-authorization`, Cloudflare Access strips its own JWT, and source IP
- * proves nothing because AI Gateway egresses from the same Cloudflare network
- * as every other Worker on the platform.
- *
- * So `Authorization` carries the whole trust decision, and a static shared
- * secret there is the weakest thing that could go in it: replayable forever
- * once captured, identical for every caller, and rotatable only by redeploying
- * two Workers in lockstep.
- *
- * A short-lived EdDSA JWT is strictly better and costs one signature. The proxy
- * verifies it with core's `verifyGatewayToken` — the same primitive already
- * guarding the A2A surface — against a **public** JWKS, so the proxy stores no
- * shared secret at all. A captured token is audience-bound to one host and dead
- * within {@link TOKEN_TTL_SECONDS}.
- *
- * ## Why it reuses `A2A_SIGNING_KEY`
- *
- * The same Ed25519 key signs this deployment's AgentCards, and its public half
- * is already published at the JWKS this token's `jku` points to. A second key
- * would mean a second JWKS entry for no security gain: the two uses are
- * separated by `aud` (this token is minted for the proxy and refused anywhere
- * else) and `jose` selects by `kid` regardless. Worth revisiting only if the
- * card key ever needs a different rotation cadence than this one.
+ * **It reuses `A2A_SIGNING_KEY`** — the key already signing this deployment's
+ * AgentCards, whose public half is already at the `jku` this token points to. A
+ * second key would buy nothing: the two uses are separated by `aud`, and `jose`
+ * selects by `kid` regardless.
  */
 
-/**
- * Long enough to survive clock skew between two Cloudflare Workers and a
- * gateway hop; short enough that a token captured from a log is worthless by
- * the time anyone reads it.
- */
+/** Survives clock skew across two Workers and a gateway hop; worthless from a log. */
 const TOKEN_TTL_SECONDS = 120;
 
 /**
- * What this deployment calls itself to the proxy.
- *
- * The proxy logs it for attribution and nothing more — **no claim in this token
- * selects an Anthropic credential**. That choice is made inside the proxy from
- * the upstream response alone, precisely so nothing a caller can assert reaches
- * for a different one.
+ * Attribution only — **no claim in this token selects an Anthropic credential**.
+ * The proxy makes that choice from the upstream response alone, so nothing a
+ * caller asserts can reach for a different one.
  */
 const PROXY_TENANT = "coder";
 
 /**
- * `importJWK` does real work, and this is on the per-request path.
+ * Mint one caller token for one request to the proxy.
  *
- * Keyed by the raw secret so a rotated `A2A_SIGNING_KEY` invalidates it rather
- * than being ignored for the life of the isolate — the same property the lazy
- * secret reads elsewhere in this agent are careful to keep.
- */
-type SigningKey = Awaited<ReturnType<typeof importJWK>>;
-
-let cached: { raw: string; key: SigningKey; kid: string } | undefined;
-
-async function signingKey(
-  raw: string
-): Promise<{ key: SigningKey; kid: string }> {
-  if (cached?.raw === raw) return cached;
-  const jwk: JWK & { kid: string } = parsePrivateJwk(raw);
-  // Not cast to `CryptoKey`: `importJWK` returns a union, and asserting the
-  // branch would be a lie the day this key is anything but Ed25519. `sign()`
-  // accepts the union as-is.
-  const key = await importJWK(jwk, A2A_JWS_ALG);
-  cached = { raw, key, kid: jwk.kid };
-  return cached;
-}
-
-/**
- * Mint one caller token for one request to the Anthropic proxy.
+ * Per request, not per round or per isolate — which is why
+ * `AnthropicRuntimeDeps.authToken` is async-capable and core rebuilds its client
+ * per call rather than memoizing one with a baked-in credential.
  *
- * Called per model request rather than per round or per isolate: a token this
- * short-lived cannot be captured once and reused, which is why
- * `AnthropicRuntimeDeps.authToken` is async-capable and why core rebuilds its
- * Anthropic client per call instead of memoizing one with a baked-in credential.
+ * Signing, the key cache, the `iss`/`jku` agreement and audience normalization
+ * are all `signCallerToken`. Only the claims are this deployment's.
+ *
+ * ## `selfOrigin` is discovered, not configured
+ *
+ * It comes from core's `requireSelfOrigin()` — the origin under the `jku` that
+ * arrives with every turn — which is why this Worker no longer carries a
+ * `SELF_ORIGIN` secret. That secret only ever restated the origin the request
+ * already came in on, and had to be kept byte-identical by hand with the proxy's
+ * `CALLER_ORIGINS`; `looping-anthropic-proxy` deleted its own half of that pair
+ * for the same reason and derives the audience it expects from `url.origin`.
+ *
+ * The value is pinned from the first turn an isolate serves and constant after
+ * that, so every token this deployment mints carries the same `iss` until the
+ * next deploy. What an operator still has to get right is one line on the other
+ * side: the origin this agent is registered and reached at must be in the
+ * proxy's `CALLER_ORIGINS` — which was already true of the JWKS the proxy
+ * fetches from that same origin.
  */
-export async function mintProxyToken(env: Env): Promise<string> {
-  const { key, kid } = await signingKey(env.A2A_SIGNING_KEY);
-  return (
-    new SignJWT({
-      [IDENTITY_CLAIM]: {
-        key: `looping:coder:${env.SELF_ORIGIN}`,
-        name: "Looping coder agent",
-        kind: "agent"
-      },
-      [TENANT_CLAIM]: PROXY_TENANT
-    })
-      .setProtectedHeader({
-        alg: A2A_JWS_ALG,
-        kid,
-        // Where the proxy fetches the public half. It validates this origin
-        // against its own allowlist *before* fetching, which is what stops a
-        // forged token from nominating an attacker-controlled JWKS.
-        jku: jwksUrl(env.SELF_ORIGIN)
-      })
-      // Must agree with `jku`'s origin, or the proxy refuses it — that check is
-      // what stops one allowlisted origin impersonating another.
-      .setIssuer(env.SELF_ORIGIN)
-      // Bound to the proxy specifically, so this token is useless against any
-      // other service that trusts the same signing key.
-      .setAudience(env.ANTHROPIC_PROXY_AUDIENCE)
-      .setIssuedAt()
-      .setExpirationTime(`${TOKEN_TTL_SECONDS}s`)
-      .sign(key)
-  );
+export async function mintProxyToken(
+  env: Env,
+  selfOrigin: string
+): Promise<string> {
+  return signCallerToken({
+    signingKey: env.A2A_SIGNING_KEY,
+    issuer: selfOrigin,
+    audience: env.ANTHROPIC_PROXY_ORIGIN,
+    identity: {
+      // Attribution, and it moves with the origin for the same reason `iss`
+      // does. Nothing on the proxy keys durable state on it.
+      key: `looping:coder:${selfOrigin}`,
+      name: "Looping coder agent",
+      kind: "agent"
+    },
+    tenant: PROXY_TENANT,
+    ttlSeconds: TOKEN_TTL_SECONDS
+  });
 }

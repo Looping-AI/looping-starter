@@ -9,7 +9,7 @@
  * Kept as an array of lines so it reads as a checklist and stays easy to extend.
  * Joined by {@link soulPrompt} into the Session's read-only `"soul"` block; the
  * per-request {@link callerContext} is appended as a system suffix at generate
- * time, and the round contract after that (see `turn.ts`).
+ * time, and the round contract after that (see `@/round-policy`).
  *
  * **Nothing about a capability belongs here.** Every installed plugin declares
  * what the agent can do with it — on the plugin's `capability`, or on its

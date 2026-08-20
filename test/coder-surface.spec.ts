@@ -2,10 +2,17 @@ import { describe, it, expect } from "vitest";
 import { env } from "cloudflare:workers";
 import { createAgentRuntime, validateRecipe } from "@loopingai/core";
 import type { PluginHost } from "@loopingai/core/host";
-import { SANDBOX_FAMILY } from "@loopingai/plugins/computer";
+import {
+  SANDBOX_FAMILY,
+  type ComputerConfig
+} from "@loopingai/plugins/computer";
 import { REPO_FAMILY } from "@loopingai/plugins/repo";
 import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
-import { parentPlugins, subagentPlugins } from "@/agents/coder/plugins";
+import {
+  container,
+  parentPlugins,
+  subagentPlugins
+} from "@/agents/coder/plugins";
 import { CODER_CONFIG } from "@/config";
 
 /**
@@ -66,7 +73,13 @@ describe("the main agent's tools", () => {
       "repo_clone",
       "repo_commit",
       "repo_diff",
+      // The three that read and write the forge's own state. They are the
+      // parent's for the same reason the rest of git is: the subagent holds the
+      // shell and must not also speak for this agent in public.
+      "repo_issue_view",
       "repo_open_pr",
+      "repo_pr_comment",
+      "repo_pr_view",
       "repo_push",
       "repo_status",
       "sb_exists",
@@ -169,5 +182,43 @@ describe("the verification rule the subagent runs under", () => {
     expect(soul).toContain("Dependencies are installed for you");
     expect(soul).toContain("npm run check");
     expect(soul).toContain("npm test");
+  });
+});
+
+/**
+ * The container settings, which two call sites have to agree on.
+ *
+ * `agent.ts`'s cancel path used to build its own `ComputerConfig` with only
+ * `binding` and `workspaceName`, so a cancellation's `git reset` ran under a
+ * different shell than every other command in the same container — `withShell`
+ * passes a command through *unwrapped* when no shell is set. It is one exported
+ * function now, and this is what stops it being two again.
+ */
+describe("the container config", () => {
+  it("carries the settings every path depends on", () => {
+    const config = container(env, () => "caller|owner/repo");
+
+    // `bash`, not the image's dash: a model writing shell writes bash, and a
+    // subagent once lost two minutes to `${PIPESTATUS[0]}` failing under dash.
+    expect(config.shell).toBe("bash");
+    expect(config.cwd).toBe("/workspace");
+    expect(config.workspaceName()).toBe("caller|owner/repo");
+    // Bounded at or below core's MAX_TOOL_CALL_MS, which core cannot enforce
+    // because core installs no tools.
+    expect(config.timeoutMs).toBe(10 * 60_000);
+    expect(config.installGateMs).toBeGreaterThan(0);
+  });
+
+  it("is the same shape whichever name it is given", () => {
+    const a = container(env, () => "one");
+    const b = container(env, () => "two");
+
+    // Everything but the two that legitimately differ per workspace.
+    const shape = ({
+      workspaceName: _name,
+      binding: _binding,
+      ...rest
+    }: ComputerConfig) => rest;
+    expect(shape(a)).toEqual(shape(b));
   });
 });

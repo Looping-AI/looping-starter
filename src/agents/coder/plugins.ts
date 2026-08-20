@@ -14,6 +14,7 @@ import { browser } from "@loopingai/plugins/browser";
 import { activeRepo } from "./active-repo";
 import { code } from "./code";
 import { workspaceName, WORKSPACE_DIR } from "./workspace-do";
+import { workspaceGit } from "./git";
 
 /**
  * The one file you edit to add or remove a capability for this agent.
@@ -67,28 +68,30 @@ const PARENT_SANDBOX_CAPABILITY = [
 ].join("\n");
 
 /**
- * The workspace both lists address: one per caller **per repository**.
+ * The container settings every path into this workspace shares.
  *
- * Keyed on the caller *and* the repository because the substrate makes that
- * structural rather than optional — `@cloudflare/computer` pairs one Durable
- * Object with one container, so two repositories cannot share a workspace even
- * if we wanted them to.
+ * Exported because the cancel path in `agent.ts` needs the *same* settings and
+ * used to rebuild a partial copy — one without `shell`, so a cancellation's
+ * cleanup ran under a different shell than every other command in the same
+ * container. One definition, so the two cannot drift again.
  *
- * The repository comes from `activeRepo`, which the repo plugin's
- * `beforeCheckout` sets from the clone URL before any git runs. Before the first
- * clone there is nothing to name, and the fallback is a caller-level workspace —
- * which is only ever used for the moments before a repository has been chosen.
+ * The name is a parameter rather than resolved here: it is one workspace per
+ * caller **per repository** (`@cloudflare/computer` pairs one Durable Object
+ * with one container, so two repositories cannot share one), and the callers
+ * differ in how they reach the caller half — `host.callerKey()` on a plugin
+ * list, which throws once a task is cancelled, and `identityKeyOrTask` there.
  *
- * The consequence to keep in mind is that a caller's checkout **outlives the
- * task**, which is why `repo_clone` fetches and resets an existing one rather
- * than assuming an empty directory. What does *not* outlive the container is
- * `node_modules`; see `install.ts`.
+ * A caller's checkout **outlives the task**, which is why `repo_clone` fetches
+ * and resets an existing one rather than assuming an empty directory. What does
+ * *not* outlive the container is `node_modules`; see `install.ts`.
  */
-function container(host: PluginHost<Env>): ComputerConfig {
-  const active = activeRepo(host);
+export function container(
+  env: Env,
+  workspaceName: () => string
+): ComputerConfig {
   return {
-    binding: host.env.CODER_WORKSPACE,
-    workspaceName: () => workspaceName(host.callerKey(), active.get()),
+    binding: env.CODER_WORKSPACE,
+    workspaceName,
     cwd: WORKSPACE_DIR,
     /**
      * The image is `debian:stable-slim`, so `/bin/sh` is **dash** — and a model
@@ -153,8 +156,10 @@ function container(host: PluginHost<Env>): ComputerConfig {
  * every recipe its subagents run.
  */
 export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
-  const config = container(host);
   const active = activeRepo(host);
+  const config = container(host.env, () =>
+    workspaceName(host.callerKey(), active.get())
+  );
   const workspace = () =>
     host.env.CODER_WORKSPACE.get(
       host.env.CODER_WORKSPACE.idFromName(
@@ -178,6 +183,20 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // This is also what lets the parent keep git while having no shell of its
       // own — `computerExec` is a function, not a tool.
       exec: computerExec(config),
+      // The other half of the same seam, and the reason `exec` above is safe to
+      // hand a model with a shell: clone, fetch and push do not go through it.
+      // They go here, to the workspace object, which reads `GITHUB_TOKEN` from
+      // its own environment — so the container never holds the credential at
+      // all, in any command, for any length of time.
+      git: workspaceGit({
+        binding: host.env.CODER_WORKSPACE,
+        // The same name `config` resolves, and it has to be: a push acting on a
+        // different workspace than the container writes into would push whatever
+        // that other checkout happened to contain.
+        workspaceName: config.workspaceName
+      }),
+      // Still needed, and now only for `repo_open_pr` — the one credentialed
+      // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
 
       // The two hooks that make per-repository workspaces work, and the order
@@ -223,7 +242,10 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
  * that has never heard of it.
  */
 export const subagentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
-  const config = container(host);
+  const active = activeRepo(host);
+  const config = container(host.env, () =>
+    workspaceName(host.callerKey(), active.get())
+  );
 
   return [
     // The name resolves from `ctx.runtime` on a subagent, so this thunk is only

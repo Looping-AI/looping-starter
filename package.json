@@ -2,7 +2,7 @@
   "name": "looping-starter",
   "version": "0.1.0",
   "private": true,
-  "description": "A working, deployable Looping agent on Cloudflare Workers. Three example agents mounted in one Worker, on @loopingai/core and @loopingai/plugins.",
+  "description": "A working, deployable Looping agent on Cloudflare Workers. Four example agents mounted in one Worker, on @loopingai/core and @loopingai/plugins.",
   "license": "GPL-3.0-only",
   "author": "Looping AI",
   "homepage": "https://github.com/Looping-AI/looping-starter#readme",
@@ -23,9 +23,8 @@
     "test:watch": "vitest",
     "test:record": "RECORD=1 vitest run recorded.spec.ts",
     "verify:isolation": "node scripts/verify-isolation.mjs",
-    "link:local": "node scripts/link-local.mjs && node scripts/patch-computer.mjs",
+    "link:local": "node scripts/link-local.mjs",
     "cf": "node scripts/cf.mjs",
-    "postinstall": "node scripts/patch-computer.mjs",
     "prepare": "husky",
     "agent:new": "node scripts/agent.mjs new",
     "agent:remove": "node scripts/agent.mjs remove"
@@ -33,10 +32,11 @@
   "dependencies": {
     "@a2a-js/sdk": "^1.0.1",
     "@anthropic-ai/sdk": "^0.116.0",
-    "@cloudflare/computer": "^0.1.1",
+    "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
-    "@loopingai/core": "^0.6.0",
-    "@loopingai/plugins": "^0.4.0",
+    "@loopingai/core": "^0.7.1",
+    "@loopingai/plugins": "^0.4.1",
+    "@platformatic/vfs": "^0.4.0",
     "agents": "^0.20.1",
     "ai": "^7.0.52",
     "drizzle-orm": "^0.45.2",
@@ -64,6 +64,7 @@
     "fsevents": false,
     "sharp": false,
     "workerd": false,
-    "core-js-pure": false
+    "core-js-pure": false,
+    "@mongodb-js/zstd": false
   }
 }

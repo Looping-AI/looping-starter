@@ -103,9 +103,10 @@ export function code(config: CodeConfig): AgentPlugin {
      *
      * This runs on the parent agent — core dispatches `resolveRuntime` to the
      * plugin that **declared** the subtask type, which is this one — so
-     * `sandboxId()` resolves here and would throw in the facet. Whatever this
-     * returns arrives at every tool family as `ToolFamilyContext.runtime`, and
-     * `@loopingai/plugins/sandbox` reads the key back out of it.
+     * `workspaceName()` resolves here and would throw in the facet. Whatever
+     * this returns arrives at every tool family as `ToolFamilyContext.runtime`,
+     * and `@loopingai/plugins/computer` reads the key back out of it with
+     * `workspaceNameFromRuntime`.
      *
      * Without this, every delegated `code` subtask fails at its first tool call
      * with the caller-identity error, while the checkout it was told to work in
