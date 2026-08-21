@@ -33,7 +33,7 @@
     "@a2a-js/sdk": "^1.0.1",
     "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
-    "@loopingai/core": "^0.8.0",
+    "@loopingai/core": "^0.8.1",
     "@loopingai/plugins": "^0.4.2",
     "@platformatic/vfs": "^0.4.0",
     "agents": "^0.20.1",
