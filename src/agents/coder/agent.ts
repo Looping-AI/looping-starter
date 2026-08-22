@@ -5,21 +5,24 @@ import {
   type RoundPolicy,
   type SubagentClass
 } from "@loopingai/core/round";
-import { computerExec } from "@loopingai/plugins/computer";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
-import { activeRepo } from "./active-repo";
-import { container, parentPlugins } from "./plugins";
-import { workspaceName, WORKSPACE_DIR } from "./workspace-do";
+import { activeRepo } from "@/workspace/active-repo";
+import { discardWorkingTree, sweepIdleWorkspaces } from "@/workspace/lifecycle";
+import { workspaceName } from "@/workspace/object";
+import { parentPlugins } from "./plugins";
 import { soulPrompt } from "./soul";
 import { CoderSubagent } from "./subagent";
+
+/** This agent's log prefix and workspace label. */
+const LABEL = "coder";
 
 /**
  * The coder agent.
  *
- * A delegating round agent like `reactive`: the loop, the durable Subtask DAG and
- * the subagent execution are all `@loopingai/core/round`, and the model pair is
- * core's Workers AI default like every other agent here.
+ * A delegating round agent like `reactive`: the loop, the durable Subtask rows
+ * and the subagent execution are all `@loopingai/core/round`, and the model pair
+ * is core's Workers AI default like every other agent here.
  *
  * What makes it the odd one out is the container underneath — so the overrides
  * below are all lifecycle, not inference: a weekly reclaim sweep for workspaces
@@ -79,91 +82,38 @@ export class CoderAgent extends RoundAgentBase<Env> {
   }
 
   /**
-   * Cron handler: offer every workspace this caller has used a chance to go.
+   * Cron handler, delegating to the shared sweep.
    *
-   * The agent decides nothing. It knows which names it handed out; the workspace
-   * knows when it was last touched, which is the only clock worth reading — the
-   * agent names a workspace once and then the subagent facet uses it for the
-   * rest of the task, traffic the agent never sees.
+   * The body is in `@/workspace/lifecycle.ts` because `claude-coder` owes its
+   * workspaces exactly the same thing, and a sweep whose whole job is to decide
+   * *not* to act is the wrong code to have two copies of.
    */
   async reclaimIdleWorkspaces(): Promise<void> {
-    let callerKey: string;
-    try {
-      callerKey = this.pluginHost().callerKey();
-    } catch {
-      // A scheduled wake-up on an instance that has never served a turn. There
-      // is nothing to sweep, because nothing was ever handed out.
-      return;
-    }
-
-    for (const repo of activeRepo(this.pluginHost()).seen()) {
-      const name = workspaceName(callerKey, repo);
-      try {
-        const result = await this.env.CODER_WORKSPACE.get(
-          this.env.CODER_WORKSPACE.idFromName(name)
-        ).reclaimIfIdle();
-        if (result.reclaimed) {
-          console.info("[coder] reclaimed an idle workspace", { name });
-        }
-      } catch (err) {
-        // Best-effort per workspace: one unreachable object must not stop the
-        // sweep reaching the rest.
-        console.warn("[coder] could not sweep a workspace", {
-          name,
-          err: String(err)
-        });
-      }
-    }
+    await sweepIdleWorkspaces({
+      host: this.pluginHost(),
+      binding: this.env.CODER_WORKSPACE,
+      label: LABEL
+    });
   }
 
   /**
    * Discard a cancelled task's half-finished edits — without discarding the
    * workspace.
    *
-   * The guarantee is unchanged: a cancelled task's working tree is an edit
-   * nobody asked for, and the checkout outlives the task, so leaving it would
-   * hand the *next* task someone's abandoned work as if it were the starting
-   * point.
-   *
-   * What changed is that throwing the container away no longer achieves it. It
-   * used to, because the container *was* the state; now the checkout lives in a
-   * Durable Object and survives the container entirely, so `destroy()` would
-   * discard `node_modules` — the one thing that is genuinely expensive to
-   * rebuild — while leaving the abandoned edits exactly where they were. Exactly
-   * backwards.
-   *
-   * So the reset happens in the checkout. `-e node_modules` keeps the install,
-   * which no cancellation has any reason to invalidate.
+   * The reasoning, and the reversal that produced it, is on
+   * `discardWorkingTree` in `@/workspace/lifecycle.ts`. All that belongs here is
+   * which workspace: the caller's, for the repository they were working on.
    */
   protected override async onTaskCanceled(taskId: string): Promise<void> {
     await super.onTaskCanceled(taskId);
-    try {
-      const host = this.pluginHost();
-      const active = activeRepo(host);
-      const name = workspaceName(this.identityKeyOrTask(taskId), active.get());
-      // The same settings the tools run under — `shell: "bash"` above all, which
-      // a partial copy of this config used to drop.
-      const exec = computerExec(container(this.env, () => name));
-      // The path the checkout is actually at, as the repo plugin reported it.
-      // Falling back to the conventional layout only when nothing has installed
-      // yet, in which case there is no working tree to discard either.
-      const dir =
-        (await this.env.CODER_WORKSPACE.get(
-          this.env.CODER_WORKSPACE.idFromName(name)
-        ).checkoutDir()) ??
-        `${WORKSPACE_DIR}/${active.get()?.split("/")[1] ?? "repo"}`;
-      // Best-effort and deliberately not fatal: `git clean` on a checkout that
-      // does not exist yet is a no-op, and a cancellation must complete either
-      // way.
-      await exec("git reset --hard && git clean -fd -e node_modules", {
-        cwd: dir
-      });
-    } catch (err) {
-      console.warn("[coder] could not discard the working tree on cancel", {
-        taskId,
-        err: String(err)
-      });
-    }
+    const active = activeRepo(this.pluginHost());
+    const repo = active.get();
+    await discardWorkingTree({
+      binding: this.env.CODER_WORKSPACE,
+      name: workspaceName(this.identityKeyOrTask(taskId), repo),
+      repo,
+      label: LABEL
+    });
   }
 
   /**

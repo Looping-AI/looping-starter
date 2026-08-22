@@ -42,6 +42,13 @@ process.env.ARC_API_KEY ??= "test-key";
 // it from the `jku` on each turn, so there is nothing to answer — and a default
 // here would hide the case an operator actually hits.
 process.env.GITHUB_TOKEN ??= "test-token";
+// claude-coder's credential pool. Never real, and nothing in the suite reaches
+// Anthropic — the gateway is tested against a stubbed `fetch` in
+// `@loopingai/plugins`, and no spec here starts a session. Two of them because
+// the pool is two entries in `wrangler.jsonc`'s `secrets.required`, and the pool
+// only ever leaves this Worker through the egress gateway.
+process.env.CLAUDE_CODE_OAUTH_TOKEN_1 ??= "sk-ant-oat01-test-1";
+process.env.CLAUDE_CODE_OAUTH_TOKEN_2 ??= "sk-ant-oat01-test-2";
 
 /**
  * The recorder, and the reason the suite cannot reach the network by accident.
@@ -99,6 +106,10 @@ export default defineConfig({
           },
           CODER_SUBAGENT: {
             className: "CoderSubagent",
+            useSQLite: true
+          },
+          CLAUDE_CODER_SUBAGENT: {
+            className: "ClaudeCoderSubagent",
             useSQLite: true
           }
         }

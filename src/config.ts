@@ -165,6 +165,101 @@ export const CODER_CONFIG: CoreConfigOverrides = {
 };
 
 /**
+ * The claude-coder agent: the coder's shape, with the *work* done elsewhere.
+ *
+ * The parent round loop is Workers AI like every other agent here — it
+ * orchestrates, reviews and talks to the user, and none of that needs a frontier
+ * model. What is different is that its subtasks do not run core's tool loop at
+ * all: each one is a Claude Code session inside the workspace container, driven
+ * by `@loopingai/plugins/claude-code`. See {@link CLAUDE_CODE_SESSION} for the
+ * numbers that bound *that*, which are not these.
+ *
+ * `maxSubtasks: 1`, and it is the one value here worth arguing about.
+ *
+ * Every other delegating agent in this repo fans out. This one must not, and the
+ * reason is the shared checkout: two Claude Code sessions in one container are
+ * two autonomous agents editing one working tree, each running the project's
+ * test suite over the other's half-finished edits. The coder already warns its
+ * model about this for `code` subtasks — "subagents share one checkout, so two
+ * of them editing the same files conflict rather than parallelise" — and there
+ * the subagents are short and closely briefed. Here they are long and
+ * unsupervised, so the guidance becomes a limit.
+ *
+ * Raise it only alongside a story for how two sessions avoid each other.
+ */
+export const CLAUDE_CODER_CONFIG: CoreConfigOverrides = {
+  ...CODER_CONFIG,
+  maxSubtasks: 1
+};
+
+/**
+ * What bounds one Claude Code session — and **this is the whole list**.
+ *
+ * Worth being explicit, because the obvious place to look is wrong. Core's
+ * `subagentLimits.maxWallMs` and the recipe's own `limits` do **not** apply:
+ * they are metered by the resumable runner, and this agent's `executeChunk`
+ * bypasses it entirely to drive the CLI instead. A limit written there is inert.
+ *
+ * Nor is there a spend cap. One was built and deleted (plugins 0.6.0): an
+ * estimate in dollars is a guess about a subscription bucket nobody can read,
+ * and the gateway now reads the bucket directly — it rotates to the next
+ * credential when Anthropic says the current one is spent. That handles the
+ * 5-hour and weekly limits; it is not a per-session bound and is not meant as
+ * one.
+ *
+ * So `timeoutMs` is the ceiling, and it is enforced by the container runtime.
+ */
+export const CLAUDE_CODE_SESSION = {
+  /**
+   * Opus 5, deliberately, because it is the reason this agent exists.
+   *
+   * A subscription credential 429s at zero tokens against the raw Messages API
+   * on every frontier model; the same credential answers through the sanctioned
+   * client. Reaching Opus is the whole payoff, so spending the bucket on
+   * something cheaper would be paying the setup cost and declining the return.
+   *
+   * The cost is real and worth stating: a 5-hour bucket is roughly $10 of
+   * Opus-equivalent and a substantial coding subtask is plausibly $1-5, so
+   * expect two to four of them per bucket per credential. `claude-sonnet-5`
+   * stretches that several times further if a deployment would rather have
+   * volume.
+   */
+  model: "claude-opus-5",
+
+  /**
+   * Forty minutes, and **this is the ceiling on a session** — see above.
+   *
+   * Longer than `CONTAINER_IDLE_MS` (20 min), which is safe and not an
+   * oversight: the idle clock is re-armed every time anything enters the
+   * workspace object, and every chunk boundary does exactly that. Boundaries are
+   * at most `windowMs` apart, so a running session touches the workspace every
+   * eight minutes. What must never happen is a *gap* longer than the idle timer,
+   * not a session longer than it.
+   */
+  timeoutMs: 40 * 60_000,
+
+  /**
+   * How long one chunk blocks before checkpointing and yielding.
+   *
+   * Inside `CHUNK_SOFT_MS` (15 min) and well inside `STEP_TIMEOUT_MS` (30 min).
+   * Forty minutes of session is about five chunks against
+   * `MAX_CHUNKS_PER_BRANCH` (40), so the structural backstop is nowhere near
+   * binding — which is the point: a chunk that returned the moment it had
+   * nothing to read would burn all forty in seconds.
+   */
+  windowMs: 8 * 60_000,
+
+  /**
+   * Advisory, all three. Claude Code's own subagent tree is invisible to
+   * Looping's scheduler and multiplies whatever they say; `timeoutMs` is what
+   * actually stops a run.
+   */
+  maxTurns: 60,
+  maxSubagentDepth: 1,
+  maxConcurrentSubagents: 4
+} as const;
+
+/**
  * The proactive agent: single-turn, no delegation, so most of the delegation
  * config above is inert for it and left at core's baseline.
  *

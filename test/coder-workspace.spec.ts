@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { makeDoHelpers } from "@loopingai/core/testing";
 import { getWorkspace } from "@cloudflare/computer";
 import type { InstallState } from "@loopingai/plugins/computer";
-import { INSTALL_PLAN } from "@/agents/coder/install";
+import { INSTALL_PLAN } from "@/workspace/install-plan";
 
 /**
  * The install gate, and the two ways it used to hang forever.

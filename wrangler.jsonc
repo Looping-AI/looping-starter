@@ -1,5 +1,5 @@
 /**
- * One Worker, four agents.
+ * One Worker, five agents.
  *
  * The agents are **tenants** of one deployment, routed by `src/index.ts` on the
  * A2A `params.tenant` — they share one origin, one `/a2a` endpoint, one signed
@@ -93,10 +93,30 @@
   // Cap `max_instances` — a container bills by the second, and the coder now
   // keys one per caller *per repository*. Note the ceiling scales with the size:
   // this line is now five standard-2s, not five standard-1s.
+  //
+  // **Two entries, one Dockerfile.** Cloudflare builds once per entry, so naming
+  // the same file twice produces two images — and `image_vars` is a Docker build
+  // arg, which is how only one of them gets the Claude Code CLI. See the block
+  // near the end of the Dockerfile for why that beat a second file.
+  //
+  // `max_instances` is per entry, so the ceiling across this Worker is now **ten**
+  // standard-2 containers, not five. A container bills by the second and each
+  // agent keys one per caller per repository.
   "containers": [
     {
       "class_name": "CoderWorkspaceDO",
       "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 5
+    },
+    {
+      "class_name": "ClaudeCoderWorkspaceDO",
+      "image": "./Dockerfile",
+      // **Pinned, and the pin is load-bearing.** The egress gateway rewrites
+      // this client's requests and `events.ts` parses its stream; both are
+      // written against a wire shape captured from this exact version. A bump
+      // needs the smoke test re-run — see the Dockerfile.
+      "image_vars": { "CLAUDE_CODE_VERSION": "2.1.238" },
       "instance_type": "standard-2",
       "max_instances": 5
     }
@@ -155,12 +175,22 @@
       { "class_name": "ProactiveAgent", "name": "ProactiveAgent" },
       { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" },
       { "class_name": "CoderAgent", "name": "CoderAgent" },
+      { "class_name": "ClaudeCoderAgent", "name": "ClaudeCoderAgent" },
 
-      // Not an agent — the coder's workspace. One object per caller per
-      // repository, holding that checkout's filesystem in SQLite and owning the
-      // container that mounts it. Addressed by `idFromName`, never by the
-      // caller alone; see `workspaceName` in `src/agents/coder/workspace-do.ts`.
-      { "class_name": "CoderWorkspaceDO", "name": "CODER_WORKSPACE" }
+      // Not agents — the two workspaces. One object per caller per repository,
+      // holding that checkout's filesystem in SQLite and owning the container
+      // that mounts it. Addressed by `idFromName`, never by the caller alone;
+      // see `workspaceName` in `src/workspace/object.ts`, which both share.
+      //
+      // Two classes rather than one shared class with two bindings, because a
+      // Durable Object namespace is keyed by class name: one class would put
+      // both agents' checkouts in one namespace, and a caller working on the
+      // same repository through both would get one container for both.
+      { "class_name": "CoderWorkspaceDO", "name": "CODER_WORKSPACE" },
+      {
+        "class_name": "ClaudeCoderWorkspaceDO",
+        "name": "CLAUDE_CODER_WORKSPACE"
+      }
     ]
   },
   "migrations": [
@@ -200,6 +230,19 @@
       // source of truth for anything, which was the whole problem with them.
       "tag": "v4",
       "deleted_classes": ["Sandbox"]
+    },
+    {
+      // The third time the "a tag is applied once, ever" rule has earned a
+      // comment, and the first where the tooling walked into it: `agent:new`
+      // appended `ClaudeCoderAgent` to **v1**, because it cannot know which tags
+      // have been deployed. v1 has, so the class would simply never have been
+      // created — and that surfaces at the first request to the agent, not at
+      // deploy. It was moved here by hand.
+      //
+      // Both classes in one tag because they arrive together: the agent and the
+      // workspace it owns.
+      "tag": "v5",
+      "new_sqlite_classes": ["ClaudeCoderAgent", "ClaudeCoderWorkspaceDO"]
     }
   ],
 
@@ -227,6 +270,11 @@
       "binding": "CODER_WORKFLOW",
       "name": "coder",
       "class_name": "CoderWorkflow"
+    },
+    {
+      "binding": "CLAUDE_CODER_WORKFLOW",
+      "name": "claude-coder",
+      "class_name": "ClaudeCoderWorkflow"
     }
   ],
 
@@ -266,12 +314,40 @@
       "A2A_SIGNING_KEY",
       "GATEWAY_ORIGINS",
       "ARC_API_KEY",
-      // coder only. `GITHUB_TOKEN` needs contents and pull-request write.
+      // Both coders. `GITHUB_TOKEN` needs contents and pull-request write.
       //
-      // It is read exclusively inside `CoderWorkspaceDO`, never crosses an RPC
+      // It is read exclusively inside a workspace object, never crosses an RPC
       // argument, and never enters the container — `onAuth` checks the host
       // allowlist at the moment the token is handed over.
-      "GITHUB_TOKEN"
+      "GITHUB_TOKEN",
+
+      // claude-coder only, and **a pool rather than a secret**: entry 1 is used
+      // until Anthropic says its 5-hour or weekly bucket is spent, then the
+      // egress gateway rotates to entry 2 and, when both are spent, reports the
+      // reset time and stops. Order is priority.
+      //
+      // Both are `claude setup-token` OAuth credentials, and **both are listed
+      // because this deployment has two**. `secrets.required` drives type
+      // generation and `wrangler dev`'s missing-secret warnings, so a name left
+      // here and unset is typed as a definite string that is undefined at
+      // runtime and warns on every local run. To run on one credential, drop
+      // `_2` here *and* in `src/agents/claude-coder/claude-code.ts` — one
+      // change, two places. (The `.filter(Boolean)` there is defence against an
+      // unset secret, not a licence to leave one declared.)
+      //
+      // Rotating either secret works as you would expect: the pool keys its
+      // spent/rejected state on a fingerprint of the credential, not on its
+      // position, so a freshly minted token is tried immediately rather than
+      // inheriting the state of the one it replaced.
+      //
+      // **Neither ever enters the container.** They are read only inside
+      // `ClaudeCoderWorkspaceDO`'s egress gateway, which swaps one into the
+      // outbound request; the container is launched with a placeholder. That
+      // matters more here than anywhere else in this file: the container runs a
+      // cloned repository's `postinstall` and its test suite, so a `printenv` in
+      // there is a `printenv` a stranger wrote.
+      "CLAUDE_CODE_OAUTH_TOKEN_1",
+      "CLAUDE_CODE_OAUTH_TOKEN_2"
     ]
   }
 }

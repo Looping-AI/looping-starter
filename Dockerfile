@@ -1,9 +1,15 @@
-# The coder agent's workspace container.
+# The workspace container, for every agent in this Worker that has one.
 #
-# Only the coder builds an image — the other three agents in this Worker never
-# touch one. Cloudflare builds this on `wrangler deploy` from the `containers`
-# block in wrangler.jsonc, always for linux/amd64: wrangler passes `--platform`
-# itself and rejects any other value, so never set one here.
+# **One Dockerfile, two images.** `coder` and `claude-coder` both point a
+# `containers[]` entry here; the second passes a `CLAUDE_CODE_VERSION` build arg
+# (see the block near the end) and gets the CLI, the first does not and stays
+# smaller. Cloudflare builds once per entry, so two entries naming this file are
+# two images.
+#
+# The agents without a workspace — reactive, proactive, arc-player — never touch
+# one. Cloudflare builds this on `wrangler deploy` from the `containers` block in
+# wrangler.jsonc, always for linux/amd64: wrangler passes `--platform` itself and
+# rejects any other value, so never set one here.
 #
 # The ENTRYPOINT is `computerd`, the workspace daemon from
 # `@cloudflare/computer`. It mounts the Durable Object's SQLite-backed VFS at
@@ -118,6 +124,40 @@ RUN if command -v corepack > /dev/null; then \
       echo "corepack is not bundled with this Node build — skipping pnpm/yarn shims"; \
     fi
 
+# --- Claude Code, for the agent whose subtasks run it -----------------------
+#
+# `image_vars` in wrangler.jsonc is a Docker build arg, so which image gets the
+# CLI is decided per `containers[]` entry rather than per file. The `coder`
+# entry passes nothing and this is a no-op; the `claude-coder` entry passes a
+# version.
+#
+# The design plan called for a second Dockerfile instead. A build arg is better:
+# the 140 lines above encode things that were expensive to learn — why the base
+# is trixie and not bookworm, why `xxd` rather than `vim-common`, why Node 24 —
+# and a copied file would drift silently, in whichever direction the image
+# nobody redeployed recently happened to go.
+#
+# **The pin is load-bearing, not tidiness.** The egress gateway rewrites this
+# client's requests and `events.ts` parses its stream, and both are written
+# against a wire shape captured from **2.1.238**: an `authorization: Bearer`
+# with no `x-api-key`, a specific `anthropic-beta` list carrying
+# `claude-code-20250219` and `oauth-2025-04-20`, and an unauthenticated
+# `HEAD /api/hello` preflight. A version bump can move any of that, so it is a
+# deliberate act that needs the smoke test re-run — see
+# `src/claude-code/README.md` in `@loopingai/plugins`. 2.1.239 exists as of
+# 2026-08-22 and has not been through it.
+#
+# `--no-fund --no-audit` for the same reason as the ENV block below: a build log
+# nobody reads is still a build log somebody has to scroll.
+ARG CLAUDE_CODE_VERSION=""
+RUN if [ -n "$CLAUDE_CODE_VERSION" ]; then \
+      npm i -g --no-fund --no-audit \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      && claude --version; \
+    else \
+      echo "no CLAUDE_CODE_VERSION build arg: this image has no Claude Code"; \
+    fi
+
 # Fail the BUILD, not round three, if the base image stops delivering the
 # toolchain. npm ignores `engines` unless a repo opts in, so nothing downstream
 # would tell you.
@@ -143,8 +183,15 @@ RUN node -e "const m=Number(process.versions.node.split('.')[0]); if (m < 24) { 
 # cause truncated out of the middle of the output. The agent should run
 # `npm run check` deliberately, as its own visible step. Drop this line if you
 # would rather the repo's own gate fire on each commit.
+#
+# DISABLE_AUTOUPDATER=1 belongs in the image as well as in the exec environment
+# the plugin passes. The plugin's copy covers the sessions it launches; this one
+# covers anything else that ever runs `claude` in here — a debugging shell, a
+# repo script — and an autoupdate is exactly the event the pin above exists to
+# prevent. Harmless in the image without the CLI.
 ENV CI=1 \
     HUSKY=0 \
+    DISABLE_AUTOUPDATER=1 \
     NO_COLOR=1 \
     FORCE_COLOR=0 \
     NPM_CONFIG_FUND=false \

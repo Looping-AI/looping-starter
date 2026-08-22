@@ -1,5 +1,5 @@
 import type { RepoGit, RepoGitResult } from "@loopingai/plugins/repo";
-import type { CoderWorkspaceDO } from "./workspace-do";
+import type { WorkspaceObjectBase } from "./object";
 
 /**
  * `/repo`'s credentialed half, wired to the Durable Object that owns the files.
@@ -17,13 +17,24 @@ import type { CoderWorkspaceDO } from "./workspace-do";
  * same workspace `computerExec` does, which it must, or a push would act on a
  * checkout the container never saw.
  *
+ * Shared by every agent with a workspace, and it has to be: the credential rule
+ * below is the one thing about git in this repository that must not be
+ * re-implemented per agent.
+ *
  * **No `runtime` parameter**, deliberately. `computerExec` takes one so a
  * delegated subagent can reach its parent's container; `/repo` is installed on
  * the parent alone, precisely so a subagent sharing the checkout cannot rewrite
  * its history.
  */
 export function workspaceGit(config: {
-  binding: DurableObjectNamespace<CoderWorkspaceDO>;
+  /**
+   * Whichever agent's workspace namespace this call belongs to.
+   *
+   * Typed on the shared base rather than on one agent's class: the three RPCs
+   * below are declared there, and naming a concrete subclass would make this
+   * function the coder's alone for no reason a caller could act on.
+   */
+  binding: DurableObjectNamespace<WorkspaceObjectBase>;
   workspaceName: () => string;
 }): RepoGit {
   // Per call, never memoised: the name depends on caller and repository, neither

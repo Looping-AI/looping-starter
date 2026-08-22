@@ -5,10 +5,10 @@
 Zero-trust A2A, durable task lifecycle, delegation to isolated subagents, episodic
 memory. Clone it, generate keys, deploy.
 
-It ships **four example agents in one Worker** — grow the one you want, and
+It ships **five example agents in one Worker** — grow the one you want, and
 `npm run agent:remove` the rest. Adding or removing a capability is a single line.
 
-Everything here is an _example_. The round loop, the durable Subtask DAG, the
+Everything here is an _example_. The round loop, the durable Subtask rows, the
 subagent execution and the task lifecycle all live in `@loopingai/core`, so this
 repo is the ~250 lines per agent that are actually yours: plugins, soul, manifest,
 config, and the round contract.
@@ -185,16 +185,17 @@ request body, and a token minted for one agent would work against any sibling.
 
 ---
 
-## The four agents
+## The five agents
 
-| Agent                                   | What it is                                                              | Why it's here                                                                                    |
-| --------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [`reactive/`](src/agents/reactive/)     | Round loop, DAG delegation, wave scheduling, subagent execution         | The flagship                                                                                     |
-| [`proactive/`](src/agents/proactive/)   | Sees every message, decides whether each is for it, answers in one turn | **The second consumer** — the only thing proving core isn't shaped around reactive's assumptions |
-| [`arc-player/`](src/agents/arc-player/) | Plays ARC-AGI-3 games                                                   | Proves a domain plugin composes without touching anything shared                                 |
-| [`coder/`](src/agents/coder/)           | Clones a repo into a Linux sandbox, changes it, opens a pull request    | The only agent on a different model provider — proves `ModelRuntime` is a real seam              |
+| Agent                                       | What it is                                                              | Why it's here                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| [`reactive/`](src/agents/reactive/)         | Round loop, delegation, subagent execution                              | The flagship                                                                                     |
+| [`proactive/`](src/agents/proactive/)       | Sees every message, decides whether each is for it, answers in one turn | **The second consumer** — the only thing proving core isn't shaped around reactive's assumptions |
+| [`arc-player/`](src/agents/arc-player/)     | Plays ARC-AGI-3 games                                                   | Proves a domain plugin composes without touching anything shared                                 |
+| [`coder/`](src/agents/coder/)               | Clones a repo into a Linux sandbox, changes it, opens a pull request    | Proves a plugin can own a Durable Object and a container without core knowing                    |
+| [`claude-coder/`](src/agents/claude-coder/) | The same, but each subtask is a Claude Code session in the container    | **Proves a subtask need not be a model loop at all** — `executeChunk` is overridden outright     |
 
-Reactive, arc-player and coder are all `RoundAgentBase` from
+Reactive, arc-player and both coders are all `RoundAgentBase` from
 [`@loopingai/core/round`](https://github.com/Looping-AI/looping-core) and differ in five
 methods each. Proactive extends `LoopingAgent` directly and writes its own loop — it
 imports no part of `/round` at all, and `npm run verify:isolation` asserts that on the
@@ -207,11 +208,29 @@ built graph. Two genuinely different loop shapes on one core.
 | can decline | no — every round answers or delegates                     | yes, that is the point               |
 | rounds      | many, driven by a Workflow                                | exactly one                          |
 
-### The coder needs one thing the others do not
+### The two coders need one thing the others do not
 
-A **container**. Everything else about it — the round loop, the durable Subtask
-DAG, the model pair — is what every other agent here runs, and that is a recent
+A **container**. Everything else about them — the round loop, the durable Subtask
+rows, the model pair — is what every other agent here runs, and that is a recent
 simplification worth knowing about if you are reading older notes.
+
+The two differ in exactly one place, and it is one level below the agent: what a
+subtask _is_. A `coder` subtask is a Looping subagent running core's tool loop
+inside the container. A `claude-coder` subtask is one `claude -p` session — its
+own loop, its own tools, its own context management — which is why that agent
+overrides `executeChunk` instead of configuring a recipe. Their workspace Durable
+Objects are two thin subclasses of one shared `src/workspace/object.ts`,
+differing in a binding name, a log label and an egress policy.
+
+That egress policy is the whole reason `claude-coder` exists. A Claude
+**subscription** credential is refused for raw Messages API calls on every
+frontier model (see below), and accepted from the sanctioned client — so the
+credential has to reach a process running inside a container that also runs a
+cloned repository's `postinstall`. It never does: the session launches with a
+placeholder, and `{ mode: "http-gateway" }` routes every outbound request through
+a `Fetcher` on the Worker side which swaps the real one in. That gateway also
+holds an ordered **pool** of credentials and rotates when Anthropic says one's
+5-hour or weekly bucket is spent.
 
 It used to run **Claude** rather than Workers AI, through an AI Gateway _custom
 provider_ whose origin was a sibling Worker (`looping-anthropic-proxy`) holding
@@ -252,47 +271,45 @@ pushes the image, so that is your laptop or your CI runner, never Cloudflare:
 With no daemon reachable, `npx wrangler deploy --containers-rollout=none` deploys
 the Worker and leaves the container alone.
 
-#### The container is cached, not destroyed — but only while it is awake
+#### The checkout outlives the container, and the container outlives the task
 
-The container is keyed on the **caller**, not the task, so a follow-up request
-lands in a warm container with the checkout and its `node_modules` already there.
-A cancelled task destroys it (a half-finished edit must not become the next task's
-starting point); a completed one keeps it.
+The **workspace** is a Durable Object, one per caller per repository, and the
+checkout lives in its SQLite. `@cloudflare/computer` mounts that filesystem into
+the container over FUSE at `/workspace`, so commands run against the same tree the
+Worker reads over RPC — and the tree survives the container being replaced.
 
-That warm start lasts exactly as long as the container stays awake. **There is no
-cross-sleep cache, and adding an R2 bucket will not give you one.** The coder used
-to snapshot `/workspace` to R2 between tasks, and it never succeeded once in
-production: `@cloudflare/sandbox` mounts that archive _inside the container_ over
-s3fs, so it needs R2 S3-API credentials (`CLOUDFLARE_ACCOUNT_ID`,
-`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `BACKUP_BUCKET_NAME`) — a Workers R2
-binding has no presign API and cannot supply them. Every task logged
-`InvalidBackupConfigError`; the whole path was dead code with a bucket attached.
+What does _not_ survive is `node_modules`. It is deliberately never synced into
+SQLite (a `pull()` after `npm ci` would drag tens of thousands of files in), so it
+lives in the container and dies with it. The workspace notices a cold container
+and arms a reinstall before anything asks for one; see
+`src/workspace/install-plan.ts`.
 
-It was deleted rather than credentialed. What it cached is reproducible from git
-and `npm ci`; what is genuinely _not_ reproducible is uncommitted work, and the
-right home for that is a Durable-Object-backed workspace
-(`@cloudflare/computer`, whose VFS is DO SQLite and needs no credential at all).
-That is a substrate swap rather than a config change, and it is currently blocked
-on one upstream gap — an `ignore` list reachable from `Workspace.pull()`, without
-which a `pull()` after `npm ci` would drag tens of thousands of files into SQLite.
+**There is deliberately no R2 bucket, and adding one buys nothing.** An earlier
+version snapshotted `/workspace` to R2 between tasks and never succeeded once in
+production: `@cloudflare/sandbox` mounted that archive _inside_ the container over
+s3fs, so it needed R2 S3-API credentials that a Workers R2 binding cannot supply —
+it has no presign API. Every task logged `InvalidBackupConfigError`. The
+DO-backed workspace replaced it and needs no credential at all.
 
-One consequence worth knowing before you debug something surprising: **a caller's
-checkout outlives their task.** `repo_clone` therefore fetches and resets an
-existing checkout rather than assuming an empty directory — and refuses outright
-if the tree is dirty, because those changes are a previous task's work and nobody
-could recover them once discarded.
+Two consequences worth knowing before you debug something surprising:
 
-`CoderSubagent.modelRuntime` must stay in step with `CoderAgent.modelRuntime`: a
-facet left on the default would run every delegated subtask on a different model
-than the round that delegated it, silently, because both satisfy `ModelRuntime`.
-Which is why neither writes the provider out — both return `coderModels` from
-`src/agents/coder/models.ts`, so there is nothing to keep in step.
+- **A caller's checkout outlives their task.** `repo_clone` therefore fetches and
+  resets an existing checkout rather than assuming an empty directory — and
+  refuses outright if the tree is dirty, because those changes are a previous
+  task's work and nobody could recover them once discarded.
+- **A cancelled task resets the working tree rather than destroying the
+  container.** That is the opposite of what it used to do, and the reversal is the
+  point: the container _was_ the state, and now it holds only the expensive,
+  reproducible half. Destroying it would throw away `node_modules` and leave the
+  abandoned edits exactly where they were.
 
-Delegated subtasks reach the parent's container through
-`code()`'s `resolveRuntime`, which runs on the parent and puts the container key
-into the runtime state every tool family receives. That indirection is required,
-not stylistic: core gives a subagent execution a `callerKey` thunk that
-**throws**, so a facet cannot derive the key itself.
+Delegated subtasks reach the parent's workspace through a `resolveRuntime` hook —
+`code()`'s for the coder, the `claude-code` plugin's for claude-coder. It runs on
+the **parent** and puts the workspace name into the runtime state the subagent
+receives. That indirection is required, not stylistic: core gives a subagent
+execution a `callerKey` thunk that **throws**, so a facet cannot derive the name
+itself — and it is deliberately not a subtask param, because those are
+model-authored and a model could then name somebody else's workspace.
 
 ---
 
@@ -382,7 +399,7 @@ npx wrangler deploy --dry-run --outdir dist
 ```
 
 `verify:isolation` is the one that survives a refactor six months from now. This Worker
-deploys as **one bundle containing all four agents**, so grepping `dist/` for "arc-agi"
+deploys as **one bundle containing every agent**, so grepping `dist/` for "arc-agi"
 would always find it and prove nothing. Instead each agent's entry is bundled on its own,
 and esbuild's **metafile** — the exact list of modules in the graph, not a string search —
 is checked for plugins that agent does not install:
@@ -468,10 +485,13 @@ src/
   host-manifest.ts      ← the stub card served at the well-known path
   config.ts             ← model ids, budgets, limits (values; core owns the shapes)
   round-policy.ts       ← the round contract + user-facing copy (core ships no prompt copy)
+  workspace/            ← the container-backed workspace both coders share
   agents/
     reactive/           ← definition, plugins, soul, manifest, the `general` plugin
     proactive/          ← its own loop + workflow, plus the same five files
     arc-player/         ← definition, plugins, soul, manifest, thin subclasses
+    coder/              ← the same five files, plus the `code` subtask type
+    claude-coder/       ← the same five files, plus a subagent that drives the CLI
 test/
 scripts/
 ```

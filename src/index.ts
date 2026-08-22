@@ -5,6 +5,7 @@ import { reactive } from "./agents/reactive/definition";
 import { proactive } from "./agents/proactive/definition";
 import { arcPlayer } from "./agents/arc-player/definition";
 import { coder } from "./agents/coder/definition";
+import { claudeCoder } from "./agents/claude-coder/definition";
 
 // Durable Objects and Workflows must be exported from the Worker entry so the
 // runtime can resolve them by class name. `ReactiveSubagent` / `ArcPlayerSubagent`
@@ -23,10 +24,14 @@ export { CoderAgent } from "./agents/coder/agent";
 export { CoderSubagent } from "./agents/coder/subagent";
 export { CoderWorkflow } from "./agents/coder/workflow";
 
-// The coder's workspace: a Durable Object holding one repository's filesystem
-// in SQLite, paired with the container that mounts it. Only the coder uses it —
-// `verify:isolation` keeps it out of the other three bundles.
+// The workspaces: a Durable Object holding one repository's filesystem in
+// SQLite, paired with the container that mounts it. One class per agent that has
+// one — a namespace is keyed by class name, so a shared class would put both
+// agents' checkouts in one namespace. Both are thin subclasses of
+// `src/workspace/object.ts`; `verify:isolation` keeps each out of the bundles
+// that do not install it.
 export { CoderWorkspaceDO } from "./agents/coder/workspace-do";
+export { ClaudeCoderWorkspaceDO } from "./agents/claude-coder/workspace-do";
 
 // Not one of our classes, and **not optional**. `CloudflareContainerBackend`
 // builds the container's egress loopback with `ctx.exports.WorkspaceProxy`, so
@@ -35,8 +40,12 @@ export { CoderWorkspaceDO } from "./agents/coder/workspace-do";
 // deleting it compiles cleanly and breaks every container at runtime.
 export { WorkspaceProxy } from "@cloudflare/computer";
 
+export { ClaudeCoderAgent } from "./agents/claude-coder/agent";
+export { ClaudeCoderSubagent } from "./agents/claude-coder/subagent";
+export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
+
 /**
- * One Worker, four agents, addressed by A2A `tenant`.
+ * One Worker, five agents, addressed by A2A `tenant`.
  *
  * They share one origin, one endpoint, one signing key and one card:
  *
@@ -81,6 +90,6 @@ export { WorkspaceProxy } from "@cloudflare/computer";
 export default {
   fetch: createA2AWorker<Env>({
     manifest: hostManifest,
-    agents: [reactive, proactive, arcPlayer, coder]
+    agents: [reactive, proactive, arcPlayer, coder, claudeCoder]
   })
 } satisfies ExportedHandler<Env>;

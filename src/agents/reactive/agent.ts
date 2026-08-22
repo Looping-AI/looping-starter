@@ -12,8 +12,7 @@ import { soulPrompt } from "./soul";
 import { ReactiveSubagent } from "./subagent";
 
 /**
- * The reactive agent: the flagship. Round loop, DAG delegation, wave scheduling,
- * subagent execution.
+ * The reactive agent: the flagship. Round loop, delegation, subagent execution.
  *
  * All of which is `@loopingai/core/round`. What is actually *this agent* is the
  * five methods below plus `./plugins.ts` and `./soul.ts` — and

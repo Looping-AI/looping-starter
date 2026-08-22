@@ -7,7 +7,7 @@ foundation) and
 capabilities) into a deployable Worker.
 
 The single most useful thing to know: **almost nothing here is framework.** The
-round loop, the durable Subtask DAG, the wave scheduler, the subagent execution,
+round loop, the durable Subtask rows, the concurrent fan-out, the subagent execution,
 the Durable Object body and the task lifecycle are all in core. What lives here is
 what core deliberately refuses to ship — the words, the config values, and which
 plugins each agent installs.

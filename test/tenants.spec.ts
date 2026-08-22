@@ -14,7 +14,7 @@ import {
 import worker from "@/index";
 
 /**
- * Four agents, one Worker, one endpoint.
+ * Five agents, one Worker, one endpoint.
  *
  * This is the file that pins the architecture the rest of the repo assumes.
  * Every assertion here is about a fact that is *only* true because the agents
@@ -22,7 +22,13 @@ import worker from "@/index";
  * `createA2AWorker` and has nothing to check.
  */
 
-const TENANTS = ["reactive", "proactive", "arc-player", "coder"] as const;
+const TENANTS = [
+  "reactive",
+  "proactive",
+  "arc-player",
+  "coder",
+  "claude-coder"
+] as const;
 
 const get = (path: string) =>
   worker.fetch(new Request(`${AGENT_ORIGIN}${path}`), env);

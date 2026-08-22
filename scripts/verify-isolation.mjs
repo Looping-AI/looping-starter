@@ -4,7 +4,7 @@
  *
  * ## What this actually checks, and why it is not the obvious thing
  *
- * This Worker deploys as **one bundle containing all three agents**, so grepping
+ * This Worker deploys as **one bundle containing every agent**, so grepping
  * `dist/` for "arc-agi" would always find it and prove nothing. The invariant
  * that matters is the one a user relies on the moment they delete the two agents
  * they don't want: *each agent's graph pulls in only the plugins that agent
@@ -116,11 +116,20 @@ const AGENTS = [
     // worth stating: the computer plugin is this agent's filesystem, and having
     // both would hand the model two unrelated ones with no way to tell from a
     // path which it is addressing.
+    //
+    // `/claude-code` is the newest entry and the one doing the most work. Both
+    // coders now share `src/workspace/object.ts`, and the whole point of that
+    // base is that it knows nothing about Claude Code: the egress policy arrives
+    // through a config seam, and only `claude-coder`'s subclass fills it in. If
+    // this ever fails, the shared base has grown an import that belongs in a
+    // subclass — which would also put an Anthropic credential path in an agent
+    // that has no business with one.
     forbidden: [
       plugin("arc-agi"),
       plugin("triage"),
       plugin("recall"),
       plugin("workspace"),
+      plugin("claude-code"),
       "@cloudflare/shell"
     ],
     // Higher than its siblings because it is the only agent carrying a container
@@ -139,6 +148,32 @@ const AGENTS = [
     //             being readable by a shell the model controls.
     // Measured 4918 KiB after both.
     maxBytes: 5_450_000
+  },
+  {
+    name: "claude-coder",
+    entries: [
+      "src/agents/claude-coder/agent.ts",
+      "src/agents/claude-coder/workflow.ts",
+      "src/agents/claude-coder/subagent.ts"
+    ],
+    // The coder's list, minus `recall` — this agent installs it, for the reason
+    // in its `plugins.ts`. No `/workspace` for the same reason as the coder: the
+    // computer plugin is this agent's filesystem and two would be ambiguous.
+    //
+    // No `arc-agi`, no `triage`. Nothing here forbids `/claude-code`, obviously
+    // — this is the one agent that installs it, and the coder's entry above is
+    // the other half of that pair.
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("workspace"),
+      "@cloudflare/shell"
+    ],
+    // Sized like the coder's, which is the right comparison: same container
+    // client, same isomorphic-git, same round loop. What it adds over the coder
+    // is `/recall` and `/claude-code`, and what it drops is nothing.
+    // Re-baseline against a measurement, never to make a red build green.
+    maxBytes: 5_800_000
   }
 ];
 
