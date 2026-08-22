@@ -207,31 +207,56 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * that outlives the task.
    *
    * Best-effort, and it must be: a cancellation has to complete whether or not
-   * the container is reachable. `super.abortRun()` still runs, because the base
-   * class's answer — interrupting the in-flight call — is the half that works
-   * when this one cannot.
+   * the container is reachable.
+   *
+   * ## The return value is a claim about who resolves the row, not a status
+   *
+   * Core reads it that way ([`round/agent.js`](../../../node_modules/@loopingai/core/dist/round/agent.js)):
+   * `true` means "there was live work and it has been interrupted, so the chunk
+   * path will come back and resolve this subtask"; `false` means "there is no
+   * live promise — the isolate was evicted or crashed, so nobody is coming
+   * back", and core then transitions the row itself and **deletes this facet**.
+   *
+   * So `super.abortRun()` is the wrong answer to return here. The base tracks an
+   * in-flight *model call*, set inside the `executeChunk` this class overrides
+   * outright — for a `claude-code` subtask it is never set, so the base always
+   * answers `false`. Returning it would tell core to tear the facet down while
+   * `executeChunk` is still unwinding its drain and about to write its cursor.
+   *
+   * A stopped session does come back: `SIGTERM` ends the process, the drain
+   * reaches `done`, and the chunk returns a terminal result. That is exactly the
+   * `true` case, so it is reported as one.
+   *
+   * The base's answer is still right in the two cases this override does not
+   * cover — no session held here, or a `stop` that could not be delivered — so
+   * those defer to it rather than overclaiming.
    */
   override async abortRun(): Promise<boolean> {
     const inflight = this.#inflight;
-    if (inflight) {
-      try {
-        const stub = this.env.CLAUDE_CODER_WORKSPACE.get(
-          this.env.CLAUDE_CODER_WORKSPACE.idFromName(inflight.name)
-        );
-        using workspace = await getWorkspace(
-          stub as unknown as Parameters<typeof getWorkspace>[0]
-        );
-        await this.#session.stop(
-          workspace.runtime as SessionRuntime,
-          inflight.subtaskId
-        );
-      } catch (err) {
-        console.warn("[claude-coder] could not stop the session", {
-          err: String(err)
-        });
-      }
+    if (!inflight) return await super.abortRun();
+
+    try {
+      const stub = this.env.CLAUDE_CODER_WORKSPACE.get(
+        this.env.CLAUDE_CODER_WORKSPACE.idFromName(inflight.name)
+      );
+      using workspace = await getWorkspace(
+        stub as unknown as Parameters<typeof getWorkspace>[0]
+      );
+      await this.#session.stop(
+        workspace.runtime as SessionRuntime,
+        inflight.subtaskId
+      );
+      return true;
+    } catch (err) {
+      // The signal never landed, so the process may still be running and this
+      // chunk may never return. `false` is the honest answer: it asks core to
+      // finish the transition and clean up rather than wait for a drain that is
+      // not coming.
+      console.warn("[claude-coder] could not stop the session", {
+        err: String(err)
+      });
+      return await super.abortRun();
     }
-    return await super.abortRun();
   }
 
   /**
@@ -294,15 +319,20 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
     ].join(" · ");
 
     if (result.isError) {
+      // Bounded on this path too. A failing session is the *more* likely one to
+      // have produced a runaway string — a loop that kept retrying, a command
+      // that dumped a binary — and `error` lands in the same durable subtask row
+      // the success path writes, so leaving it unbounded would defeat
+      // {@link REPORT_MAX} exactly where it matters most.
+      const detail =
+        truncateOutput(result.text, REPORT_MAX) ||
+        `the session ended as ${result.subtype}` +
+          (result.apiErrorStatus === null
+            ? ""
+            : ` after an API ${result.apiErrorStatus}`);
       return {
         status: "failed",
-        error:
-          (result.text ||
-            `the session ended as ${result.subtype}` +
-              (result.apiErrorStatus === null
-                ? ""
-                : ` after an API ${result.apiErrorStatus}`)) +
-          `\n\n_${footer}_`,
+        error: `${detail}\n\n_${footer}_`,
         modelId
       };
     }

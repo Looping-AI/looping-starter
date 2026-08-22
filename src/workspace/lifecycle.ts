@@ -37,6 +37,24 @@ export type WorkspaceNamespace = DurableObjectNamespace<WorkspaceObjectBase>;
  * So the reset happens in the checkout. `-e node_modules` keeps the install,
  * which no cancellation has any reason to invalidate.
  *
+ * ## `-x`, and why the exclusion is the whole design
+ *
+ * `git clean -fd` without `-x` leaves **ignored** files exactly where they are,
+ * which quietly defeats the guarantee above: a half-built `dist/`, a generated
+ * client, a coverage report or a scratch config written by the abandoned run all
+ * survive into the next task, and `git status` reports the tree as clean while
+ * they do. That is the abandoned-work-as-starting-point case this function
+ * exists to prevent, arriving through the one door `git status` does not show.
+ *
+ * `-x` closes it, and the `-e node_modules` exclusion is what makes `-x` safe to
+ * use: the single genuinely expensive artefact is named and kept, and everything
+ * else that gets removed is something a build regenerates. That trade is only
+ * this clean because the workspace is a JavaScript one by construction —
+ * `INSTALL_PLAN` resolves npm, pnpm or yarn and nothing else — so `node_modules`
+ * really is the expensive set rather than one member of it. An install plan that
+ * grows another ecosystem needs its directory added here in the same change,
+ * or a cancellation starts throwing away a `.venv` or a Rust `target/`.
+ *
  * Best-effort and deliberately not fatal: `git clean` on a checkout that does
  * not exist yet is a no-op, and a cancellation must complete either way.
  */
@@ -61,7 +79,7 @@ export async function discardWorkingTree(config: {
         .get(config.binding.idFromName(config.name))
         .checkoutDir()) ??
       `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`;
-    await exec("git reset --hard && git clean -fd -e node_modules", {
+    await exec("git reset --hard && git clean -fdx -e node_modules", {
       cwd: dir
     });
   } catch (err) {

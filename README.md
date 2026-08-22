@@ -55,12 +55,13 @@ npm run deploy
 Register each agent with your gateway using the **same endpoint** and its own
 **tenant id**:
 
-| endpoint                    | tenant id    |
-| --------------------------- | ------------ |
-| `https://<your-worker>/a2a` | `reactive`   |
-| `https://<your-worker>/a2a` | `proactive`  |
-| `https://<your-worker>/a2a` | `arc-player` |
-| `https://<your-worker>/a2a` | `coder`      |
+| endpoint                    | tenant id      |
+| --------------------------- | -------------- |
+| `https://<your-worker>/a2a` | `reactive`     |
+| `https://<your-worker>/a2a` | `proactive`    |
+| `https://<your-worker>/a2a` | `arc-player`   |
+| `https://<your-worker>/a2a` | `coder`        |
+| `https://<your-worker>/a2a` | `claude-coder` |
 
 `/a2a` is core's default, not a requirement — see [Where the endpoints
 live](#where-the-endpoints-live). Register whatever path this deployment actually serves.
@@ -68,10 +69,10 @@ live](#where-the-endpoints-live). Register whatever path this deployment actuall
 > **Browser Rendering needs a paid Workers plan.** On the free tier, remove `browser()`
 > from the agents' `plugins.ts` and the `browser` binding from `wrangler.jsonc`.
 
-> **The coder's container needs a paid plan and a running Docker daemon** — Docker
-> Desktop on macOS and Windows, the Docker CLI alone on Linux. `npm run deploy` builds
-> `./Dockerfile` on this machine. See [The coder needs two things the others do
-> not](#the-coder-needs-two-things-the-others-do-not).
+> **The two coders' containers need a paid plan and a running Docker daemon** — Docker
+> Desktop on macOS and Windows, the Docker CLI **and engine** on Linux. `npm run deploy`
+> builds `./Dockerfile` on this machine. See [The two coders need one thing the others
+> do not](#the-two-coders-need-one-thing-the-others-do-not).
 
 ---
 

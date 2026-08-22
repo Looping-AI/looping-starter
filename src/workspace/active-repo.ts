@@ -30,6 +30,35 @@ import type { PluginHost } from "@loopingai/core/host";
  * Object `storage.get` is async; `storage.sql` is not. So the value lives in a
  * one-row table, written on selection and read synchronously on every call, with
  * an in-memory cache in front so the common case touches no storage at all.
+ *
+ * ## Known limitation: one task at a time, per caller
+ *
+ * The row is keyed `id = 1` — **one selection per agent object**, and an agent
+ * object is per caller, not per task. Two tasks from the same caller running at
+ * once, cloning different repositories, therefore overwrite each other's
+ * selection: the later `set()` wins, and from that moment the earlier task's own
+ * tools (`repo_diff`, the reads, and the commit/push that ends it) resolve to the
+ * *other* task's workspace. Cancellation cleanup follows the same wrong name.
+ *
+ * Delegated work is not exposed to this. A subagent facet receives its workspace
+ * name on `ctx.runtime`, resolved on the parent at delegation time and pinned for
+ * the life of the subtask, so a session cannot be moved out from under itself.
+ * The exposure is the parent's own tool calls, between one task's clone and the
+ * other's.
+ *
+ * **It is not fixable in this file**, which is why this is documented rather than
+ * patched. The fix is to key the selection by task, and nothing here can: core's
+ * `PluginHost` exposes `env`, `storage`, `callerKey` and `aiGatewayId`, and no
+ * task or context identifier at all — so a plugin, and this thunk, have no way to
+ * ask which task they are serving. Closing it means adding that identity to
+ * `PluginHost` upstream and threading it through `workspaceName()`, which must
+ * stay synchronous. Until then this agent assumes one task at a time per caller,
+ * and that assumption is load-bearing.
+ *
+ * Note the workspace itself should stay keyed on `(caller, repo)` even after
+ * that change. Making workspaces per-task would give each one a cold container
+ * and a fresh `node_modules`, which is the cost the whole design exists to avoid;
+ * it is the *routing* that needs task scope, not the storage.
  */
 
 const TABLE = "coder_active_repo";

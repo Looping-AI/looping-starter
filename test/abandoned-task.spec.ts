@@ -4,16 +4,21 @@ import type { WorkflowStep } from "cloudflare:workers";
 import { TaskState } from "@a2a-js/sdk";
 import type { GatewayIdentity, PlainTask } from "@loopingai/core/a2a";
 import { roundPolicy } from "@/round-policy";
-import { deliverAbandonedTask } from "@/agents/coder/workflow";
+import { deliverAbandonedTask, type TerminalTaskAgent } from "@/abandoned-task";
 
 /**
  * The path that turns an exhausted retry ladder into words the user sees.
  *
- * This is the one branch in the coder's workflow that no other spec reaches and
- * that production reached first: on 2026-08-19 the `turn:0` step burned its four
- * attempts against a rate-limited Claude, `runHandleTask` threw, and the Task sat
- * in `working` forever while the runtime logged a hang. Nothing failed loudly —
- * which is exactly why it needs a spec rather than a comment.
+ * This is the one branch in a delegating agent's workflow that no other spec
+ * reaches and that production reached first: on 2026-08-19 the `turn:0` step
+ * burned its four attempts against a rate-limited Claude, `runHandleTask` threw,
+ * and the Task sat in `working` forever while the runtime logged a hang. Nothing
+ * failed loudly — which is exactly why it needs a spec rather than a comment.
+ *
+ * Driven against the shared helper rather than through a workflow class, because
+ * workerd forbids constructing a `WorkflowEntrypoint` outside the runtime. Both
+ * `CoderWorkflow` and `ClaudeCoderWorkflow` call exactly this function from their
+ * `catch`; what they add is a label and which agent to resolve.
  */
 
 const IDENTITY: GatewayIdentity = {
@@ -42,13 +47,13 @@ interface FakeAgentOptions {
 }
 
 /**
- * An env whose agent namespace hands back a recording stub. `resolveAgent` does
- * `ns.get(ns.idFromName(key))`, so those two methods are the whole surface.
+ * A recording agent stub. `TerminalTaskAgent` is the whole surface the delivery
+ * needs, which is what lets this spec name no Durable Object at all.
  */
-function fakeEnv(options: FakeAgentOptions = {}) {
+function fakeAgent(options: FakeAgentOptions = {}) {
   const calls: string[] = [];
   const saved: PlainTask[] = [];
-  const stub = {
+  const stub: TerminalTaskAgent = {
     async saveTask(task: PlainTask) {
       calls.push("saveTask");
       saved.push(task);
@@ -58,14 +63,7 @@ function fakeEnv(options: FakeAgentOptions = {}) {
       calls.push("sweepTaskChildren");
     }
   };
-  const patched = {
-    ...env,
-    CoderAgent: {
-      idFromName: (name: string) => name,
-      get: () => stub
-    }
-  } as unknown as Env;
-  return { env: patched, calls, saved };
+  return { agent: () => stub, calls, saved };
 }
 
 function params(taskId: string) {
@@ -85,18 +83,20 @@ describe("deliverAbandonedTask", () => {
   it("saves a failed Task carrying the policy's copy", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }));
-    const agent = fakeEnv();
+    const fake = fakeAgent();
     const { step } = fakeStep();
 
-    await deliverAbandonedTask(
-      agent.env,
-      params("t1"),
+    await deliverAbandonedTask({
+      params: params("t1"),
       step,
-      new Error("AI_RetryError: Failed after 3 attempts")
-    );
+      cause: new Error("AI_RetryError: Failed after 3 attempts"),
+      signingKey: env.A2A_SIGNING_KEY,
+      label: "coder",
+      agent: fake.agent
+    });
 
-    expect(agent.calls).toContain("saveTask");
-    const failed = agent.saved[0];
+    expect(fake.calls).toContain("saveTask");
+    const failed = fake.saved[0];
     expect(failed?.status?.state).toBe(TaskState.TASK_STATE_FAILED);
     // The user is told something, and it is the policy's words rather than a
     // paraphrase invented at the failure site.
@@ -106,15 +106,17 @@ describe("deliverAbandonedTask", () => {
   it("logs the original cause, since nothing else records it", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }));
-    const agent = fakeEnv();
+    const fake = fakeAgent();
     const { step } = fakeStep();
 
-    await deliverAbandonedTask(
-      agent.env,
-      params("t2"),
+    await deliverAbandonedTask({
+      params: params("t2"),
       step,
-      new Error("AI_RetryError: 429 rate_limit_error")
-    );
+      cause: new Error("AI_RetryError: 429 rate_limit_error"),
+      signingKey: env.A2A_SIGNING_KEY,
+      label: "coder",
+      agent: fake.agent
+    });
 
     expect(error).toHaveBeenCalledWith(
       "[coder] task abandoned after retries were exhausted",
@@ -123,6 +125,34 @@ describe("deliverAbandonedTask", () => {
         error: expect.stringContaining("429 rate_limit_error")
       })
     );
+  });
+
+  /**
+   * The label is the caller's, so an operator reading the log can tell which of
+   * the two coders went quiet. This is the assertion that would have failed
+   * while `claude-coder` had no recovery at all: its workflow reached
+   * `runHandleTask` with nothing above it, so no line was ever logged.
+   */
+  it("labels the log with the agent that abandoned the task", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }));
+    const fake = fakeAgent();
+    const { step } = fakeStep();
+
+    await deliverAbandonedTask({
+      params: params("t5"),
+      step,
+      cause: new Error("session step exhausted its retries"),
+      signingKey: env.A2A_SIGNING_KEY,
+      label: "claude-coder",
+      agent: fake.agent
+    });
+
+    expect(error).toHaveBeenCalledWith(
+      "[claude-coder] task abandoned after retries were exhausted",
+      expect.objectContaining({ taskId: "t5" })
+    );
+    expect(fake.calls).toContain("saveTask");
   });
 
   /**
@@ -137,12 +167,19 @@ describe("deliverAbandonedTask", () => {
       posted.push(String(input));
       return new Response("{}", { status: 200 });
     });
-    const agent = fakeEnv({ saveTask: false });
+    const fake = fakeAgent({ saveTask: false });
     const { step, ran } = fakeStep();
 
-    await deliverAbandonedTask(agent.env, params("t3"), step, new Error("x"));
+    await deliverAbandonedTask({
+      params: params("t3"),
+      step,
+      cause: new Error("x"),
+      signingKey: env.A2A_SIGNING_KEY,
+      label: "coder",
+      agent: fake.agent
+    });
 
-    expect(agent.calls).toContain("saveTask");
+    expect(fake.calls).toContain("saveTask");
     expect(ran).not.toContain("notify");
     expect(posted).toHaveLength(0);
   });
@@ -156,22 +193,22 @@ describe("deliverAbandonedTask", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", async () => new Response("{}", { status: 200 }));
     const cause = new Error("the original fault");
-    const { env: patched } = fakeEnv();
-    const broken = {
-      ...patched,
-      CoderAgent: {
-        idFromName: (name: string) => name,
-        get: () => ({
-          async saveTask() {
-            throw new Error("durable object unreachable");
-          }
-        })
-      }
-    } as unknown as Env;
     const { step } = fakeStep();
 
     await expect(
-      deliverAbandonedTask(broken, params("t4"), step, cause)
+      deliverAbandonedTask({
+        params: params("t4"),
+        step,
+        cause,
+        signingKey: env.A2A_SIGNING_KEY,
+        label: "coder",
+        agent: () => ({
+          async saveTask(): Promise<boolean> {
+            throw new Error("durable object unreachable");
+          },
+          async sweepTaskChildren(): Promise<void> {}
+        })
+      })
     ).rejects.toBe(cause);
   });
 });
