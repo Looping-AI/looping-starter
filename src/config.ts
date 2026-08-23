@@ -222,7 +222,31 @@ export const CLAUDE_CODE_SESSION = {
    */
   maxTurns: 60,
   maxSubagentDepth: 1,
-  maxConcurrentSubagents: 4
+  maxConcurrentSubagents: 4,
+
+  /**
+   * How the session answers its own permission prompts.
+   *
+   * The plugin already defaults to this value, so the line is redundant in the
+   * sense that deleting it changes nothing today. It is here because the block
+   * above claims to be **the whole list** of what bounds a session, and a
+   * setting this consequential resolving somewhere a reader of this file cannot
+   * see would make that claim false.
+   *
+   * `bypassPermissions` because `claude -p` is headless: there is nobody to
+   * answer a prompt, so any mode that would ask **auto-denies** instead. On the
+   * CLI's default a session reads the repository perfectly, cannot change one
+   * byte of it, and reports prose that reads like considered reluctance rather
+   * than a blocked tool — it exits 0 and the subtask is recorded as completed.
+   * This deployment lost a day to exactly that, with the container working fine
+   * underneath it.
+   *
+   * The container is the reason bypassing is acceptable rather than merely
+   * convenient: it holds no credential — the egress gateway swaps the real one
+   * in on the Worker side — and `npm ci` already runs whatever `postinstall` a
+   * cloned repository ships. Containment is the credential swap.
+   */
+  permissionMode: "bypassPermissions"
 } as const;
 
 /**

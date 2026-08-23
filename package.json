@@ -35,7 +35,7 @@
     "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
     "@loopingai/core": "^0.8.3",
-    "@loopingai/plugins": "^0.7.0",
+    "@loopingai/plugins": "^0.8.0",
     "@platformatic/vfs": "^0.4.0",
     "agents": "^0.20.1",
     "ai": "^7.0.52",

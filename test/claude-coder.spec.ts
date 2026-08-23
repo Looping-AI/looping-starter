@@ -15,10 +15,11 @@ import { REPO_FAMILY } from "@loopingai/plugins/repo";
 import { parentPlugins, subagentPlugins } from "@/agents/claude-coder/plugins";
 import {
   sessionBrief,
+  sessionFooter,
   settleDrain,
   type ClaudeCoderSubagent
 } from "@/agents/claude-coder/subagent";
-import { CLAUDE_CODER_CONFIG } from "@/config";
+import { CLAUDE_CODER_CONFIG, CLAUDE_CODE_SESSION } from "@/config";
 
 /**
  * The claude-coder's wiring, pinned.
@@ -371,5 +372,57 @@ describe("the brief a session starts from", () => {
     expect(brief.indexOf("the workspace is full")).toBeLessThan(
       brief.indexOf("the flag should be --json")
     );
+  });
+});
+
+describe("the footer under a session's report", () => {
+  const spent = {
+    numTurns: 12,
+    durationMs: 95_000,
+    costUsd: 1.2345,
+    usage: { cacheRead: 187_130 },
+    permissionDenials: 0
+  };
+
+  it("accounts for what the session spent", () => {
+    expect(sessionFooter(spent)).toBe(
+      "turns: 12 · duration: 95s · cost: $1.2345 · cache reads: 187130"
+    );
+  });
+
+  /**
+   * The signal that was parsed and read by nobody while every session in the
+   * deployment was being refused every write. A denied tool call never appears
+   * in the session's own account of itself — the model narrates an alternative
+   * approach and carries on — so this line is where it becomes visible.
+   */
+  it("says so when tool calls were refused", () => {
+    expect(sessionFooter({ ...spent, permissionDenials: 3 })).toContain(
+      "denials: 3"
+    );
+  });
+
+  /**
+   * Absent rather than `denials: 0`. A number that is always there is a number
+   * nobody reads, and the whole value of this field is that its presence is
+   * itself the alarm.
+   */
+  it("stays quiet on a run where nothing was refused", () => {
+    expect(sessionFooter(spent)).not.toContain("denials");
+  });
+});
+
+/**
+ * The mode the session runs under, pinned.
+ *
+ * `claude -p` is headless: nothing can answer a permission prompt, so a mode
+ * that would ask **auto-denies** instead. On the CLI's default a session reads
+ * the checkout perfectly, cannot write to it, exits 0, and is recorded as
+ * completed — which is how this went unnoticed for a release. The assertion is
+ * cheap and the failure it guards against is not.
+ */
+describe("the permission mode this deployment runs sessions under", () => {
+  it("bypasses, because every other mode cannot edit the checkout", () => {
+    expect(CLAUDE_CODE_SESSION.permissionMode).toBe("bypassPermissions");
   });
 });

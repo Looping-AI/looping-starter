@@ -1,10 +1,11 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeDoHelpers } from "@loopingai/core/testing";
 import { getWorkspace } from "@cloudflare/computer";
 import type { InstallState } from "@loopingai/plugins/computer";
 import { INSTALL_PLAN } from "@/workspace/install-plan";
+import { TRUST_CA_COMMAND } from "@/workspace/object";
 
 /**
  * The install gate, and the two ways it used to hang forever.
@@ -447,5 +448,108 @@ describe("reclaiming an idle workspace", () => {
     // And once emptied it reports nothing to do rather than reclaiming again,
     // which is the loop this whole describe exists for.
     expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(false);
+  });
+});
+
+/**
+ * The CA-trust command, which has no other way to be wrong safely.
+ *
+ * It is a shell script carried as a string and run in a container the suite
+ * cannot reach, so the only failure that matters — it does not parse — would
+ * otherwise surface as a workspace with no working TLS and a log line nobody
+ * connects to a missing `\` .
+ */
+describe("the interception CA command", () => {
+  const lines = TRUST_CA_COMMAND.split("\n");
+
+  /**
+   * A newline ends a command in sh, so an `&&` or `||` opening a line is a
+   * syntax error rather than the continuation it looks like. The operators have
+   * to trail. This is the exact mistake the first draft made.
+   */
+  it("never opens a line with a shell operator", () => {
+    for (const line of lines) {
+      expect(line.trimStart()).not.toMatch(/^(&&|\|\|)/);
+    }
+  });
+
+  /**
+   * The listing runs before, and outside, the `if`. When the CA is missing it is
+   * the only evidence separating "mounted somewhere else" from "never
+   * provisioned", which is the question the whole step exists to answer.
+   */
+  it("lists the directory whether or not the CA is there", () => {
+    expect(lines[0]).toContain("ls -A /etc/cloudflare/certs");
+    expect(TRUST_CA_COMMAND).toContain("NO CA AT");
+  });
+});
+
+/**
+ * When the CA gets installed, and the gap that made it not happen.
+ *
+ * The trust used to hang off `#beginInstall`, which quietly made it conditional
+ * on the container also being due a dependency install. Those are not the same
+ * question, and a `skipped` workspace is where they come apart: the resolver
+ * found nothing to install, so `#armInstallIfCold` deliberately never arms, so
+ * nothing ever calls `#beginInstall` again — and every command in every
+ * replacement container runs against an untrusted CA, failing TLS with an error
+ * that names no cause.
+ *
+ * These run **without a container**, like the rest of this file, so the trust
+ * command cannot succeed. That is fine and is the point: what regressed was
+ * whether it is *attempted*, and an attempt is observable either way.
+ */
+describe("trusting the interception CA", () => {
+  /** Every outcome of the trust step logs; a skipped one logs nothing at all. */
+  function attempts(calls: unknown[][]): number {
+    return calls.filter(([msg]) =>
+      String(msg).includes("trust the interception CA")
+    ).length;
+  }
+
+  it("happens for a workspace with nothing to install", async () => {
+    const stub = freshWorkspace("ca-skipped-install");
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("install", {
+        state: "skipped",
+        reason: "no package.json"
+      } satisfies InstallState);
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      using ws = await getWorkspace(
+        stub as unknown as Parameters<typeof getWorkspace>[0]
+      );
+      void ws;
+      expect(attempts(warn.mock.calls)).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * `#beginInstall` returns early when the workspace is full, and the old call
+   * site sat below that return — so the one situation where the agent most needs
+   * working egress to dig itself out was the one that never got a CA. Reaching
+   * the object at all is now enough.
+   */
+  it("happens before anything that can refuse an install", async () => {
+    const stub = freshWorkspace("ca-before-refusals");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      using ws = await getWorkspace(
+        stub as unknown as Parameters<typeof getWorkspace>[0]
+      );
+      void ws;
+      // No checkout, no install record, nothing armed — the paths that used to
+      // carry the trust are all inert here.
+      expect(await storedInstall(stub)).toBeUndefined();
+      expect(attempts(warn.mock.calls)).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
