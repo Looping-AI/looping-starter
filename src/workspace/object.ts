@@ -198,6 +198,15 @@ const CONTAINER_IDLE = "container-idle";
  *
  * Twenty minutes is double that ceiling. Raise it — never lower it — if
  * `sb_exec` is ever given a longer timeout.
+ *
+ * **The default, not the policy.** An agent whose longest command runs longer
+ * than this must say so via {@link WorkspaceObjectConfig.containerIdleMs},
+ * because the rule above is about the agent rather than about this base class:
+ * `claude-coder` holds one `claude -p` session open for its whole 40-minute
+ * timeout, and at twenty minutes the container would be stopped out from under a
+ * live session. Chunk boundaries re-enter this object and `#touch()`, which
+ * mostly hides that — but "mostly" is not the guarantee this constant is
+ * documented to give, and a retried or delayed chunk is all it takes.
  */
 const CONTAINER_IDLE_MS = 20 * 60_000;
 
@@ -308,6 +317,19 @@ export interface WorkspaceObjectConfig {
   installPlan: InstallPlan;
   /** Log prefix — `coder-workspace`, `claude-coder-workspace`. */
   label: string;
+  /**
+   * How long this agent's container stays up after the last command **started**.
+   *
+   * A per-agent value because the invariant on {@link CONTAINER_IDLE_MS} — it
+   * must exceed the longest command the shell allows — is an invariant about the
+   * *agent*, and the two differ by a factor of four. The coder's longest command
+   * is a tool call; `claude-coder`'s is a whole `claude -p` session that runs
+   * detached for its entire timeout.
+   *
+   * Omit it for the default. Raise it, never lower it, and raise it whenever the
+   * agent's longest command grows.
+   */
+  containerIdleMs?: number;
 }
 
 /**
@@ -358,6 +380,11 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * fallback has to be the same number in all three, and a `??` repeated three
    * times is three chances to write a different one.
    */
+  /** This agent's container-idle window — see {@link WorkspaceObjectConfig}. */
+  get #containerIdleMs(): number {
+    return this.#cfg.containerIdleMs ?? CONTAINER_IDLE_MS;
+  }
+
   get #installTimeoutMs(): number {
     return this.#cfg.installPlan.timeoutMs ?? 20 * 60_000;
   }
@@ -805,7 +832,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     });
     await this.#wake.set({
       key: CONTAINER_IDLE,
-      notBefore: now + CONTAINER_IDLE_MS
+      notBefore: now + this.#containerIdleMs
     });
   }
 
@@ -820,10 +847,21 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   async reclaimIfIdle(
     maxIdleMs: number = IDLE_RECLAIM_MS
   ): Promise<{ reclaimed: boolean; idleMs: number; bytes: number }> {
-    const lastUsedAt = (await this.ctx.storage.get<number>("lastUsedAt")) ?? 0;
-    const idleMs = Date.now() - lastUsedAt;
+    const lastUsedAt = await this.ctx.storage.get<number>("lastUsedAt");
     const bytes = this.ctx.storage.sql.databaseSize;
 
+    // Nothing has ever used this object, so there is nothing to reclaim.
+    //
+    // Load-bearing, not defensive. `lastUsedAt` is written by `#touch()` and
+    // removed by the `deleteAll()` below, so an *already reclaimed* workspace
+    // reads exactly like a brand new one — and the old `?? 0` turned that into
+    // "idle since the epoch", the most idle a workspace can possibly be. The
+    // weekly sweep therefore re-reclaimed every workspace it had ever reclaimed,
+    // every week, recreating storage just to empty it and logging a reclaim that
+    // did not happen.
+    if (lastUsedAt === undefined) return { reclaimed: false, idleMs: 0, bytes };
+
+    const idleMs = Date.now() - lastUsedAt;
     if (idleMs < maxIdleMs) return { reclaimed: false, idleMs, bytes };
 
     console.info(`[${this.#tag}] reclaiming an idle workspace`, {
@@ -1595,7 +1633,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       if (state.state === "running") {
         await this.#wake.set({
           key: CONTAINER_IDLE,
-          notBefore: Date.now() + CONTAINER_IDLE_MS
+          notBefore: Date.now() + this.#containerIdleMs
         });
         return;
       }
@@ -1608,10 +1646,10 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       const lastUsedAt =
         (await this.ctx.storage.get<number>("lastUsedAt")) ?? 0;
       const idleMs = Date.now() - lastUsedAt;
-      if (idleMs < CONTAINER_IDLE_MS) {
+      if (idleMs < this.#containerIdleMs) {
         await this.#wake.set({
           key: CONTAINER_IDLE,
-          notBefore: lastUsedAt + CONTAINER_IDLE_MS
+          notBefore: lastUsedAt + this.#containerIdleMs
         });
         return;
       }

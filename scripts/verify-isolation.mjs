@@ -110,7 +110,13 @@ const AGENTS = [
     entries: [
       "src/agents/coder/agent.ts",
       "src/agents/coder/workflow.ts",
-      "src/agents/coder/subagent.ts"
+      "src/agents/coder/subagent.ts",
+      // The workspace object is a deployed class of this agent's too, and
+      // omitting it left the one assertion below that names `/claude-code`
+      // unable to fail: the shared base arrives in this graph anyway (via
+      // `workspaceName` in `agent.ts`), but the *subclass* did not, so an import
+      // added only there was neither leak-checked nor size-counted.
+      "src/agents/coder/workspace-do.ts"
     ],
     // No arc-agi, no triage, no recall — and no `/workspace`, which is the one
     // worth stating: the computer plugin is this agent's filesystem, and having
@@ -147,14 +153,25 @@ const AGENTS = [
     //             it. Bought knowingly: it is the cost of the credential never
     //             being readable by a shell the model controls.
     // Measured 4918 KiB after both.
-    maxBytes: 5_450_000
+    //
+    // Raised when `workspace-do.ts` was added to `entries` above. That moved the
+    // *measurement*, not the agent: the deployed bytes are unchanged and the
+    // check simply stopped being blind to one of its classes. Measured 5185 KiB
+    // after, which the old 5322 KiB ceiling left only 2.6% of headroom over —
+    // too tight for the ~8% every other entry here runs with, so it would have
+    // gone red on the next dependency bump for no real reason.
+    maxBytes: 5_740_000
   },
   {
     name: "claude-coder",
     entries: [
       "src/agents/claude-coder/agent.ts",
       "src/agents/claude-coder/workflow.ts",
-      "src/agents/claude-coder/subagent.ts"
+      "src/agents/claude-coder/subagent.ts",
+      // Included for the reason the coder's is, and more sharply: this subclass
+      // is where the credential-egress gateway is wired, so it is the single
+      // file this check most needs to be watching.
+      "src/agents/claude-coder/workspace-do.ts"
     ],
     // The coder's list, minus `recall` — this agent installs it, for the reason
     // in its `plugins.ts`. No `/workspace` for the same reason as the coder: the

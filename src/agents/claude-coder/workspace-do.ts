@@ -8,6 +8,7 @@ import {
   WorkspaceObjectBase,
   type WorkspaceObjectConfig
 } from "@/workspace/object";
+import { CLAUDE_CODE_SESSION } from "@/config";
 import { INSTALL_PLAN } from "@/workspace/install-plan";
 import { claudeCodeConfig, CREDENTIALS_KEY } from "./claude-code";
 
@@ -67,6 +68,25 @@ export class ClaudeCoderWorkspaceDO extends WorkspaceObjectBase {
       binding: "CLAUDE_CODER_WORKSPACE",
       label: "claude-coder-workspace",
       installPlan: INSTALL_PLAN,
+      // Above the whole session, not above one drain window.
+      //
+      // The base's default is twenty minutes, and its rule is that the window
+      // must exceed the longest command the shell allows — measured from when
+      // that command *starts*, because nothing touches the object again while it
+      // runs. This agent's longest command is a `claude -p` session that stays
+      // detached for its entire timeout, so twenty minutes would put the idle
+      // alarm inside a live session.
+      //
+      // Chunk boundaries re-enter this object and `#touch()` roughly every
+      // `windowMs`, which does hide it almost always — but "almost always" is
+      // not what that rule promises, and one retried or delayed chunk is enough
+      // to stop the container under a running session and lose the work plus the
+      // 18.7-27k-token prefix that bought it.
+      //
+      // Derived from the session timeout rather than written out, so raising one
+      // moves the other. The margin covers the gap between a session ending and
+      // the final chunk unwinding.
+      containerIdleMs: CLAUDE_CODE_SESSION.timeoutMs + 5 * 60_000,
       egress: {
         mode: "http-gateway",
         gateway: this.#session.egress(this.#credentials)

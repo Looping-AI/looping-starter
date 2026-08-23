@@ -79,12 +79,30 @@ export interface ActiveRepo {
    * out, there is no way to ask a workspace whether it has gone stale.
    *
    * It is deliberately only a list of candidates. Whether a workspace is
-   * actually idle is decided by the workspace, from its own `lastUsedAt` — so a
-   * stale entry here pokes an already-empty object and is told there is nothing
-   * to do, and an entry that goes missing only means that workspace falls back
-   * to its own alarm.
+   * actually idle is decided by the workspace, from its own `lastUsedAt` — and
+   * an entry that goes missing only means that workspace falls back to its own
+   * alarm.
+   *
+   * This used to claim a stale entry was free, on the grounds that it "pokes an
+   * already-empty object and is told there is nothing to do". That was wrong in
+   * both halves: a reclaimed workspace has had its storage deleted, so
+   * `lastUsedAt` reads as `0`, which is maximally idle — it was told it had
+   * reclaimed something, every week, forever, logging a false line and
+   * recreating storage to empty it again. `reclaimIfIdle` now reports nothing to
+   * do when there is nothing there, and {@link forget} keeps this list
+   * proportional to the workspaces that actually exist. Both, because they fix
+   * different halves: one stops the lie, the other stops the growth.
    */
   seen(): string[];
+  /**
+   * Drop a repository from the candidate list.
+   *
+   * Called when its workspace has been reclaimed, so the weekly sweep stops
+   * paying for a workspace that no longer exists. `set()` puts it back on the
+   * next clone, which is the whole reason this is safe to do: forgetting a
+   * candidate loses nothing that the next checkout does not restore.
+   */
+  forget(repo: string): void;
 }
 
 export function activeRepo(host: PluginHost<Env>): ActiveRepo {
@@ -149,6 +167,11 @@ export function activeRepo(host: PluginHost<Env>): ActiveRepo {
         .exec<{ repo: string }>(`SELECT repo FROM ${SEEN_TABLE}`)
         .toArray()
         .map((row) => row.repo);
+    },
+
+    forget(repo: string): void {
+      ensure();
+      storage.sql.exec(`DELETE FROM ${SEEN_TABLE} WHERE repo = ?`, repo);
     }
   };
 }

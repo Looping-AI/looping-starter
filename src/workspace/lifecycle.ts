@@ -120,7 +120,8 @@ export async function sweepIdleWorkspaces(config: {
     return;
   }
 
-  for (const repo of activeRepo(config.host).seen()) {
+  const repos = activeRepo(config.host);
+  for (const repo of repos.seen()) {
     const name = workspaceName(callerKey, repo);
     try {
       const result = await config.binding
@@ -128,6 +129,11 @@ export async function sweepIdleWorkspaces(config: {
         .reclaimIfIdle();
       if (result.reclaimed) {
         console.info(`[${config.label}] reclaimed an idle workspace`, { name });
+        // Drop the candidate with the workspace it named. Without this the list
+        // only ever grows, so the sweep's cost is the number of repositories a
+        // caller has *ever* touched rather than the number they still have —
+        // and `set()` puts it back the moment they clone that repository again.
+        repos.forget(repo);
       }
     } catch (err) {
       // Best-effort per workspace: one unreachable object must not stop the

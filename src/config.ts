@@ -229,12 +229,19 @@ export const CLAUDE_CODE_SESSION = {
   /**
    * Forty minutes, and **this is the ceiling on a session** — see above.
    *
-   * Longer than `CONTAINER_IDLE_MS` (20 min), which is safe and not an
-   * oversight: the idle clock is re-armed every time anything enters the
-   * workspace object, and every chunk boundary does exactly that. Boundaries are
-   * at most `windowMs` apart, so a running session touches the workspace every
-   * eight minutes. What must never happen is a *gap* longer than the idle timer,
-   * not a session longer than it.
+   * Longer than the workspace base's twenty-minute default container-idle
+   * window, so `ClaudeCoderWorkspaceDO` raises its own above this value —
+   * derived from this constant, so the two cannot drift.
+   *
+   * That is a correction. The argument here used to be that the length was safe
+   * because the idle clock is re-armed whenever anything enters the workspace
+   * object, and every chunk boundary does, at most `windowMs` apart. The first
+   * half is true and the conclusion does not follow: it makes the container's
+   * survival depend on chunk boundaries arriving on time, and a retried or
+   * delayed chunk is all it takes to exceed the remaining twelve minutes. The
+   * cost of being wrong is the container stopped under a live session, losing
+   * the work and the 18.7-27k-token prefix that bought it. A window wider than
+   * the whole session does not need the argument at all.
    */
   timeoutMs: 40 * 60_000,
 

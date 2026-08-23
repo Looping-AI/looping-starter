@@ -393,3 +393,54 @@ describe("arming a reinstall for a cold container", () => {
     expect((await storedInstall(stub))?.state ?? "idle").toBe("idle");
   });
 });
+
+/**
+ * Reclaiming, and the weekly loop it used to run forever.
+ *
+ * `lastUsedAt` is written by `#touch()` and removed by the `deleteAll()` that
+ * reclaiming performs — so a workspace that has *already* been reclaimed reads
+ * exactly like one that was never used. Defaulting that to `0` made it look
+ * idle since the epoch, which is maximally idle: every weekly sweep re-reclaimed
+ * every workspace it had ever reclaimed, recreating storage just to empty it
+ * again and logging a reclaim that did not happen. Both the candidate table and
+ * the RPC work grew for the lifetime of the caller.
+ */
+describe("reclaiming an idle workspace", () => {
+  it("reports nothing to do for a workspace nothing has ever used", async () => {
+    const stub = freshWorkspace("never-used");
+
+    const result = await stub.reclaimIfIdle();
+
+    // Not `reclaimed: true` with an epoch-sized `idleMs`, which is what an
+    // absent `lastUsedAt` used to produce.
+    expect(result.reclaimed).toBe(false);
+    expect(result.idleMs).toBe(0);
+  });
+
+  it("stays false however long the sweep waits", async () => {
+    // The bug was not a threshold being too low — it was a missing record
+    // reading as "idle forever", so no `maxIdleMs` could ever make it false.
+    const stub = freshWorkspace("never-used-zero-threshold");
+
+    expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(false);
+  });
+
+  /**
+   * The other half: a workspace that has been used is still reclaimable, so the
+   * fix above cannot have been "never reclaim anything".
+   */
+  it("still reclaims one that was used and then went idle", async () => {
+    const stub = freshWorkspace("used-then-idle");
+    // `getWorkspace` is the busiest entry point and the one that touches.
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    await ws.fs.mkdir("/workspace/repo", { recursive: true });
+
+    // A zero threshold stands in for a week having passed.
+    expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(true);
+    // And once emptied it reports nothing to do rather than reclaiming again,
+    // which is the loop this whole describe exists for.
+    expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(false);
+  });
+});
