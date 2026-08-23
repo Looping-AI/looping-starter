@@ -95,6 +95,17 @@ export class ClaudeCoderAgent extends RoundAgentBase<Env> {
    * coder: a cancelled Claude Code session is stopped mid-turn with `SIGTERM`
    * (see `subagent.ts`), so the tree it leaves is whatever it had reached, and
    * the checkout outlives the task.
+   *
+   * **The `super` call is load-bearing ordering, not politeness.** SIGTERM is
+   * chosen because Claude Code does more work after it — its `SessionEnd` hooks,
+   * its process tree, its exit — and the container-to-workspace sync is driven
+   * by the facet's drain reaching `done`, not by the signal. So a reset issued
+   * as soon as the signal was delivered can be followed by a sync carrying files
+   * the session wrote afterwards, leaving the tree this exists to clean in an
+   * arbitrary half-reset state. `ClaudeCoderSubagent.abortRun` therefore does
+   * not return until that drain has unwound, which is what makes the reset below
+   * safe to run. Anything that reorders these two lines, or that stops awaiting
+   * `abortRun`, reopens it.
    */
   protected override async onTaskCanceled(taskId: string): Promise<void> {
     await super.onTaskCanceled(taskId);

@@ -43,6 +43,47 @@ const CURSOR_KEY = "claude-cursor";
 /** Bound on the report text, so one runaway session cannot fill the row. */
 const REPORT_MAX = 24_000;
 
+/**
+ * How long a cancellation waits for the interrupted drain to unwind.
+ *
+ * Generous, because what it is waiting on is a process exit plus a
+ * container-to-workspace filesystem sync whose cost scales with the number of
+ * files the session touched — and because the alternative to waiting is a
+ * working-tree reset racing that sync. Still bounded: a cancellation must
+ * complete whether or not the container is answering.
+ */
+const SETTLE_MAX_MS = 60_000;
+
+/**
+ * Wait for an interrupted drain to unwind, but never indefinitely.
+ *
+ * Module-level and exported so the bound can be driven in a spec: the wait it
+ * implements is about a container the suite deliberately never reaches, so the
+ * only way to cover both arms is to inject the window.
+ *
+ * Returns whether the drain settled in time. Exceeding the bound means the
+ * ordering this exists to establish was **not** established — the tree may be
+ * reset under a session that is still shutting down — so it is reported rather
+ * than passed over in silence. Bounded at all because a cancellation has to
+ * finish whether or not the container is answering.
+ */
+export async function settleDrain(
+  drained: Promise<void>,
+  maxMs: number = SETTLE_MAX_MS
+): Promise<boolean> {
+  const timedOut = Symbol("timed-out");
+  const result = await Promise.race([
+    drained.then(() => undefined),
+    scheduler.wait(maxMs).then(() => timedOut)
+  ]);
+  if (result !== timedOut) return true;
+  console.warn(
+    "[claude-coder] the session did not unwind within the settle window; " +
+      "the working-tree reset may race its final filesystem sync"
+  );
+  return false;
+}
+
 export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return CLAUDE_CODER_CONFIG;
@@ -73,8 +114,15 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * In memory only, and that is correct rather than lazy: an isolate that lost
    * it has no in-flight drain to interrupt, so there is nothing for a persisted
    * copy to do. Mirrors the base class's own `inflight`.
+   *
+   * `settled` resolves when that drain has finished unwinding — see
+   * {@link abortRun}, which is the only reason it is recorded.
    */
-  #inflight?: { name: string; subtaskId: number };
+  #inflight?: {
+    name: string;
+    subtaskId: number;
+    settled: Promise<void>;
+  };
 
   /**
    * Execute one durable chunk by draining a Claude Code session.
@@ -161,7 +209,16 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
       stub as unknown as Parameters<typeof getWorkspace>[0]
     );
     const runner = workspace.runtime as SessionRuntime;
-    this.#inflight = { name, subtaskId: request.subtaskId };
+    // Resolved in the `finally` below, so {@link abortRun} can wait for this
+    // drain to unwind rather than only for the signal to be delivered.
+    let drained: () => void = () => {};
+    this.#inflight = {
+      name,
+      subtaskId: request.subtaskId,
+      settled: new Promise<void>((resolve) => {
+        drained = resolve;
+      })
+    };
 
     let outcome: DrainOutcome;
     try {
@@ -175,6 +232,7 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
           );
     } finally {
       this.#inflight = undefined;
+      drained();
     }
 
     /**
@@ -230,6 +288,27 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * The base's answer is still right in the two cases this override does not
    * cover — no session held here, or a `stop` that could not be delivered — so
    * those defer to it rather than overclaiming.
+   *
+   * ## Why it then waits for the drain
+   *
+   * `stop` delivers a signal; it does not wait for the process to go. `killRun`
+   * is `killExec(id, { signal: "SIGTERM" })`, and SIGTERM is chosen precisely
+   * *because* Claude Code does more work after it — aborts the turn, kills its
+   * Bash process tree, runs its `SessionEnd` hooks, then exits 143.
+   *
+   * That matters because of what the parent does next. `onTaskCanceled` awaits
+   * this method and then runs `git reset --hard && git clean -fdx` in the same
+   * container. Returning as soon as the signal was delivered would let that
+   * reset run *while the session is still writing* — and worse, the
+   * container-to-workspace sync is driven by the drain reaching `done`
+   * (`withPostPull`), so files the session wrote after the reset would be synced
+   * into the durable checkout afterwards. The cleanup whose entire purpose is to
+   * guarantee a clean tree would leave an arbitrary half-reset one.
+   *
+   * So this waits for the drain to unwind, which is the point at which the
+   * process is gone and its post-pull sync has already completed. Bounded,
+   * because a cancellation has to finish: a drain that will not settle is
+   * logged and left, which is no worse than the race it replaces.
    */
   override async abortRun(): Promise<boolean> {
     const inflight = this.#inflight;
@@ -246,6 +325,7 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
         workspace.runtime as SessionRuntime,
         inflight.subtaskId
       );
+      await settleDrain(inflight.settled);
       return true;
     } catch (err) {
       // The signal never landed, so the process may still be running and this

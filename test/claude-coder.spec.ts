@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { createAgentRuntime } from "@loopingai/core";
@@ -13,7 +13,10 @@ import { SANDBOX_FAMILY } from "@loopingai/plugins/computer";
 import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
 import { REPO_FAMILY } from "@loopingai/plugins/repo";
 import { parentPlugins, subagentPlugins } from "@/agents/claude-coder/plugins";
-import type { ClaudeCoderSubagent } from "@/agents/claude-coder/subagent";
+import {
+  settleDrain,
+  type ClaudeCoderSubagent
+} from "@/agents/claude-coder/subagent";
 import { CLAUDE_CODER_CONFIG } from "@/config";
 
 /**
@@ -257,5 +260,70 @@ describe("the credential pool", () => {
       expect(lead.index).toBe(0);
       expect(lead.token).toBe("sk-ant-oat01-test-1");
     }
+  });
+});
+
+/**
+ * Cancellation ordering, and the one thing a signal does not buy.
+ *
+ * `stop` is `killExec(id, { signal: "SIGTERM" })` — it delivers a signal and
+ * returns. SIGTERM is chosen *because* Claude Code does more work after it:
+ * aborts the turn, kills its Bash process tree, runs its `SessionEnd` hooks,
+ * exits 143. Meanwhile the parent's `onTaskCanceled` awaits `abortRun` and then
+ * runs `git reset --hard && git clean -fdx` in the same container — and the
+ * container-to-workspace sync is driven by the *drain* reaching `done`, so a
+ * reset that goes first can be followed by a sync carrying files the session
+ * wrote after it. The cleanup that exists to guarantee a clean tree would leave
+ * an arbitrary half-reset one.
+ *
+ * The ordering itself needs a real container and belongs to the deploy-time
+ * cancel test. What is coverable here is the wait that establishes it, which is
+ * why its bound is injectable.
+ */
+describe("waiting for an interrupted session to unwind", () => {
+  it("returns as soon as the drain settles", async () => {
+    let drained: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      drained = resolve;
+    });
+    // A window far longer than this test could take, so a pass means it
+    // observed the drain rather than outliving the bound.
+    const waiting = settleDrain(settled, 30_000);
+    drained();
+
+    await expect(waiting).resolves.toBe(true);
+  });
+
+  it("gives up on a drain that never settles, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear();
+
+    // Never resolved: an isolate holding a stream a dead container will not
+    // close. A cancellation still has to finish.
+    const settled = new Promise<void>(() => {});
+
+    await expect(settleDrain(settled, 10)).resolves.toBe(false);
+    // Reported, because the ordering this exists for was not established and a
+    // silent pass would hide a working-tree reset racing a filesystem sync.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("did not unwind within the settle window")
+    );
+  });
+
+  /**
+   * The no-session path must not pay the window. `abortRun` defers to the base
+   * class when it is holding nothing, and a settle wait applied unconditionally
+   * would stall every such cancellation for a full minute.
+   */
+  it("does not wait when the facet is holding no session", async () => {
+    const stub = freshSubagent("abort-idle");
+    const started = Date.now();
+    const interrupted = await runInDurableObject(
+      stub,
+      (instance: ClaudeCoderSubagent) => instance.abortRun()
+    );
+
+    expect(interrupted).toBe(false);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
