@@ -84,6 +84,37 @@ export async function settleDrain(
   return false;
 }
 
+/**
+ * What the session is asked to do.
+ *
+ * The subtask's own prompt, plus the verbatim history the delegating model
+ * selected, plus whatever the workspace has to say for itself. A Claude Code
+ * session has no view of the parent's conversation and cannot ask, so anything
+ * that matters has to be inline — which is the same contract every subagent in
+ * this repo works under, said to a different process. The workspace note is
+ * inline for the same reason: the session cannot query the host, and a broken
+ * install or a workspace that has stopped accepting writes is the difference
+ * between a failure worth retrying and one that never will be.
+ */
+export function sessionBrief(
+  request: RecipeExecutionRequest,
+  note?: string
+): string {
+  const parts = [request.prompt];
+  if (note) {
+    parts.push("", "## The state of this workspace", "", note);
+  }
+  if (request.references.length > 0) {
+    parts.push(
+      "",
+      "## Context from the conversation that produced this task",
+      "",
+      ...request.references.map((ref) => `**${ref.role}:** ${ref.text}`)
+    );
+  }
+  return parts.join("\n");
+}
+
 export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return CLAUDE_CODER_CONFIG;
@@ -250,7 +281,7 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
         : await this.#session.start(
             runner,
             request.subtaskId,
-            this.#brief(request, note),
+            sessionBrief(request, note),
             dir as string
           );
     } finally {
@@ -338,34 +369,6 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
       });
       return await super.abortRun();
     }
-  }
-
-  /**
-   * What the session is asked to do.
-   *
-   * The subtask's own prompt, plus the verbatim history the delegating model
-   * selected, plus whatever the workspace has to say for itself. A Claude Code
-   * session has no view of the parent's conversation and cannot ask, so anything
-   * that matters has to be inline — which is the same contract every subagent in
-   * this repo works under, said to a different process. The workspace note is
-   * inline for the same reason: the session cannot query the host, and a broken
-   * install or a workspace that has stopped accepting writes is the difference
-   * between a failure worth retrying and one that never will be.
-   */
-  #brief(request: RecipeExecutionRequest, note?: string): string {
-    const parts = [request.prompt];
-    if (note) {
-      parts.push("", "## The state of this workspace", "", note);
-    }
-    if (request.references.length > 0) {
-      parts.push(
-        "",
-        "## Context from the conversation that produced this task",
-        "",
-        ...request.references.map((ref) => `**${ref.role}:** ${ref.text}`)
-      );
-    }
-    return parts.join("\n");
   }
 
   /**

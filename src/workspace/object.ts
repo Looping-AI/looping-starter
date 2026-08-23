@@ -872,11 +872,17 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * Refuse to keep filling an object that is running out of room.
+   * Whether this object is out of room, and by how much.
    *
-   * Checked before an install rather than continuously: that is the only
-   * operation here that can move the number meaningfully, and a failure with the
-   * number in it is worth far more than a write erroring further downstream.
+   * Read on **two** paths, and the second is load-bearing. `#beginInstall`
+   * consults it because an install is the operation that can move the number
+   * meaningfully. {@link advisories} consults it on every call, which is what
+   * lets a full workspace reach commands that have nothing to do with
+   * dependencies — the write being lost is rarely a dependency's, so a capacity
+   * fact delivered only alongside install state reaches everything except what
+   * it is about.
+   *
+   * Cheap enough for that: `databaseSize` is a local property read, not a query.
    */
   #storageHeadroom(): { bytes: number; capBytes: number } | undefined {
     const bytes = this.ctx.storage.sql.databaseSize;
@@ -1172,9 +1178,9 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * away — the array `sb_exec`, `sb_write` and `sb_edit` all consult.
    *
    * The policy is not here. `deriveAdvisories` decides which facts matter and
-   * how they are worded; this method gathers the three things only the object
-   * can see and hands them over. That split is why a host cannot get the
-   * severity of its own workspace wrong.
+   * how they are worded; this method gathers what only the object can see and
+   * hands it over. That split is why a host cannot get the severity of its own
+   * workspace wrong.
    *
    * **Nothing that starts a long job belongs on this path**, and the rule is
    * sharper here than anywhere else in the object because every tool call reads

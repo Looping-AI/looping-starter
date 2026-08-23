@@ -14,6 +14,7 @@ import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
 import { REPO_FAMILY } from "@loopingai/plugins/repo";
 import { parentPlugins, subagentPlugins } from "@/agents/claude-coder/plugins";
 import {
+  sessionBrief,
   settleDrain,
   type ClaudeCoderSubagent
 } from "@/agents/claude-coder/subagent";
@@ -325,5 +326,50 @@ describe("waiting for an interrupted session to unwind", () => {
 
     expect(interrupted).toBe(false);
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+/**
+ * What reaches the session, and in what order.
+ *
+ * A Claude Code session cannot query the host — it has no tool that reaches it —
+ * so anything the brief omits is not merely inconvenient, it is unreachable.
+ * The workspace note is the case that matters: a session working against a
+ * broken install or a workspace that has stopped accepting writes needs to know
+ * before it starts, and its own report is the only channel back to the parent.
+ */
+describe("the brief a session starts from", () => {
+  const withPrompt = (
+    over: Partial<RecipeExecutionRequest> = {}
+  ): RecipeExecutionRequest => ({ ...request(), ...over });
+
+  it("is the bare prompt when there is nothing to add", () => {
+    expect(sessionBrief(withPrompt())).toBe("add a --json flag");
+  });
+
+  it("carries the workspace note where the session will read it", () => {
+    const brief = sessionBrief(withPrompt(), "the install failed: ERESOLVE");
+    expect(brief).toContain("add a --json flag");
+    expect(brief).toContain("## The state of this workspace");
+    expect(brief).toContain("the install failed: ERESOLVE");
+  });
+
+  /**
+   * Order is not cosmetic. The prompt is the task; everything after it is
+   * context for the task, and a note that preceded the instruction would read as
+   * part of it.
+   */
+  it("keeps the task first and its context after", () => {
+    const brief = sessionBrief(
+      withPrompt({
+        references: [{ role: "user", text: "the flag should be --json" }]
+      }),
+      "the workspace is full"
+    );
+
+    expect(brief.indexOf("add a --json flag")).toBe(0);
+    expect(brief.indexOf("the workspace is full")).toBeLessThan(
+      brief.indexOf("the flag should be --json")
+    );
   });
 });

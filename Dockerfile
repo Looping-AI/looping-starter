@@ -246,9 +246,9 @@ EXPOSE 8080
 #
 # **NODE_EXTRA_CA_CERTS is not belt-and-braces.** Node carries its own bundled
 # root store and ignores the system one, so `update-ca-certificates` alone
-# leaves npm and Claude Code — the two clients that actually failed — failing in
-# exactly the same way. The trust-store update is what covers everything else a
-# session shells out to: curl, git over https, pip.
+# leaves anything running on Node — npm and Claude Code among them — failing in
+# exactly the same way. The trust-store update is what covers what does read the
+# system store: curl, git over https, pip.
 #
 # Conditional, so one image serves both agents and `wrangler dev` too: under
 # `direct` egress nothing is intercepted, the path does not exist, and this is a
