@@ -7,8 +7,9 @@ import type { RoundPolicy } from "@loopingai/core/round";
  * The words a round agent says — the one part of the round loop core does not
  * ship.
  *
- * `@loopingai/core/round` owns all the mechanism: the DAG wave scheduler, chunked
- * subagent execution, cancellation ordering, the primary→fallback→repair ladder.
+ * `@loopingai/core/round` owns all the mechanism: the durable Subtask rows and
+ * their concurrent fan-out, chunked subagent execution, cancellation ordering,
+ * the primary→fallback→repair ladder.
  * It reads none of it out loud. Everything below is text a model or a user
  * actually sees, and core refuses to lend a default for any of it — the same
  * refusal `validateRecipe` makes about a subagent soul, and for the same reason:
@@ -70,8 +71,6 @@ that does it in the same turn rather than describing what you are about to do.
 
 Each subtask has:
 
-- "localKey": a short unique identifier within this call (e.g. "research"). Must not
-  be blank.
 - "type": exactly one of ${typeKeys.map((k) => `"${k}"`).join(", ")}. These are
   the only accepted values — any other word is rejected and the whole call fails.
   See the tool description for what each type does and which params it needs.
@@ -83,13 +82,14 @@ Each subtask has:
   verbatim, chosen from the turns marked "[ref N]" below. Reference only what that
   subtask actually needs. Turns without a "[ref N]" marker cannot be referenced;
   if information from one matters, restate it in the prompt yourself.
-- "dependsOn": the localKeys this subtask needs the output of. Leave it empty for
-  work that can start immediately. Dependent subtasks receive their prerequisites'
-  output. The graph must be acyclic, and may only reference subtasks in this same
-  call.
 
-Subtasks with no dependency between them run at the same time, so only add an edge
-where output genuinely feeds input.
+**Every subtask in one call starts at the same time, and none of them can see
+another's output.** So put work in the same call only when the pieces are genuinely
+independent. When one step needs what another produces, delegate only the first step
+now — its results come back to you, and you delegate the next step then, in a later
+call. That is how sequencing works here; there is no way to order subtasks within a
+single call, and a subtask written as though it can read a sibling's output will run
+without it.
 
 Ask each subtask for the **material** you need, not for a finished answer: its
 output is raw material for you, never something the user sees directly.
@@ -110,9 +110,15 @@ again, now, in this call, rather than guessed at.
 
 **Announcing is not doing.** A \`${FINAL_REPLY_TOOL_NAME}\` that says what you are about
 to do next ends the request instead of doing it: nothing runs after that call, and
-the user has been told otherwise. If your next step is more work, that step is a
-\`${DELEGATE_TOOL_NAME}\` call whose "reply" carries the very words you would have
-announced.
+the user has been told otherwise. Nothing you describe in that message happens.
+
+There are two ways to actually do it, and you must pick one before replying:
+
+- The step is **yours to run** — a tool you hold. Call it now, in this turn, and
+  reply once you have its result. Words like "proceeding", "now", "next I'll" are
+  the signal that you have skipped this.
+- The step is **work for someone else**. That is a \`${DELEGATE_TOOL_NAME}\` call whose
+  "reply" carries the very words you would have announced.
 
 If some work failed or was skipped, say plainly what you could not do, in one
 short sentence, without diagnostics or blame — then give them everything you did

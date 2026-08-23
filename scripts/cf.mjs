@@ -14,8 +14,10 @@
 //   --since <30m|2h|1d>   time window back from now (default 1h)
 //   --worker <name>       filter by service/script name (server-side)
 //   --level <error|warn|info|debug>   filter by level (server-side)
-//   --grep <text>         keep events whose message contains <text> (client-side)
-//   --limit <N>           max events (default 100)
+//   --grep <text>         keep events whose message contains <text>, case-
+//                         insensitively (server-side, so it searches the whole
+//                         window rather than the first page)
+//   --limit <N>           max matching events (default 100, max 2000)
 //   --json | --raw        full pretty JSON / verbatim body instead of the digest
 //
 // Raw passthrough (anything the subcommands don't cover):
@@ -40,6 +42,11 @@ import fs from "node:fs";
 const ENV_FILE = ".cf.env";
 const BASE = "https://api.cloudflare.com/client/v4";
 const DATASET = "cloudflare-workers";
+// The telemetry API's hard ceiling on `limit`; above it the request 400s.
+const MAX_LIMIT = 2000;
+// AI Gateway has its own, much lower ceiling on `per_page` (verified: 50 is
+// accepted, 51 gets "Number must be less than or equal to 50").
+const AI_MAX_LIMIT = 50;
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
 function die(msg) {
@@ -89,6 +96,17 @@ function parseSince(s) {
   if (!m) die(`bad --since "${s}" (expected like 30m, 2h, 1d)`);
   const unit = { s: 1e3, m: 60e3, h: 3600e3, d: 86400e3 }[m[2]];
   return Number(m[1]) * unit;
+}
+
+// `--limit` for both `logs` and `ai`. Number.parseInt would quietly accept
+// "2.5" and "20abc" as 2 and 20; Number() alone would pass NaN to the API and
+// let it answer with a validation body nobody can read.
+function parseLimit(raw, fallback) {
+  if (raw === undefined) return fallback;
+  const n = Number(String(raw).trim());
+  if (!Number.isInteger(n) || n <= 0)
+    die(`bad --limit "${raw}" (expected a positive integer)`);
+  return n;
 }
 
 // Pull known --flags out of an arg list; everything else is a positional.
@@ -176,9 +194,10 @@ async function cmdLogs(args) {
   const sinceLabel = flags.since ?? "1h";
   const to = Date.now();
   const from = to - parseSince(sinceLabel);
-  const limit = Number.parseInt(String(flags.limit ?? 100), 10);
-  if (!Number.isFinite(limit) || limit <= 0)
-    die(`bad --limit "${flags.limit}" (expected a positive integer)`);
+  const limit = parseLimit(flags.limit, 100);
+  // The API rejects anything above this with a validation body nobody can read.
+  if (limit > MAX_LIMIT)
+    die(`--limit ${limit} is above the API maximum of ${MAX_LIMIT}`);
   const worker = flags.worker ?? flags.service;
 
   const filters = [];
@@ -196,6 +215,36 @@ async function cmdLogs(args) {
       value: worker,
       type: "string"
     });
+  /**
+   * `--grep` is a **server-side** filter, and it has to be.
+   *
+   * It used to filter the returned page in this process, which was wrong twice
+   * over. The obvious way: `limit` is applied by the API *before* anything here
+   * runs, so `--grep foo` searched only the newest 100 events and reported "no
+   * events matching" for anything older — a false negative that reads exactly
+   * like a true one.
+   *
+   * The way that matters: raising `--limit` does not fix it. A query for the
+   * last 72 hours with no filter and `limit: 2000` came back with 1107 events
+   * spanning the whole window — and `[repo] afterCheckout failed`, timestamped
+   * squarely inside that span, was **not among them**, while the same window
+   * with this filter found it immediately. The page the API returns is not a
+   * complete enumeration of the window even below the limit, so no amount of
+   * client-side scanning can be trusted to find a rare line — which is the only
+   * kind anybody greps for.
+   *
+   * `includes` is case-insensitive, matching what the client-side filter did,
+   * and `$metadata.message` is byte-identical to the `source.message` that was
+   * being tested before (verified across 1105 events, zero differing). So this
+   * is the same question asked somewhere it can actually be answered.
+   */
+  if (flags.grep)
+    filters.push({
+      key: "$metadata.message",
+      operation: "includes",
+      value: String(flags.grep),
+      type: "string"
+    });
 
   const { res, text } = await telemetryQuery({ from, to, filters, limit });
   ensureOk(res, text);
@@ -205,13 +254,7 @@ async function cmdLogs(args) {
   }
 
   const json = parseJson(text);
-  let evs = json?.result?.events?.events ?? [];
-  if (flags.grep) {
-    const needle = String(flags.grep).toLowerCase();
-    evs = evs.filter((e) =>
-      (e.source?.message ?? "").toLowerCase().includes(needle)
-    );
-  }
+  const evs = json?.result?.events?.events ?? [];
   if (evs.length === 0) {
     out(
       `no events in last ${sinceLabel}${flags.grep ? ` matching "${flags.grep}"` : ""}`
@@ -241,11 +284,11 @@ async function cmdLogs(args) {
     const msg = (e.source?.message ?? "").replace(/\s+/g, " ").slice(0, 100);
     out(`${hhmmss(e.timestamp)}  ${lvl}  ${svc}  ${msg}`);
   }
-  // The telemetry `limit` caps before any --grep, so compare against the raw page.
-  const rawCount = json?.result?.events?.events?.length ?? 0;
-  if (rawCount >= limit)
+  // Every filter is server-side now, so the page *is* the match set and this
+  // counts what you were actually looking for.
+  if (evs.length >= limit)
     out(
-      `\n⚠ hit limit ${limit} — window may be truncated; narrow --since or raise --limit`
+      `\n⚠ hit limit ${limit} — older matches are cut off; narrow --since or raise --limit (max ${MAX_LIMIT})`
     );
 }
 
@@ -370,33 +413,40 @@ async function cmdAi(args) {
   const gw = flags.gateway ?? AI_GW_DEFAULT;
   if (pos[0]) return cmdAiDetail(gw, pos[0], flags);
 
-  const limit = Number(flags.limit ?? 20);
+  const limit = parseLimit(flags.limit, 20);
+  if (limit > AI_MAX_LIMIT)
+    die(`--limit ${limit} is above the API maximum of ${AI_MAX_LIMIT}`);
+  // Both filters go to the API, for the same reason `logs --grep` does: applied
+  // here they would run *after* `per_page`, so `--since 2h` would search the
+  // newest 20 calls and confidently report "no AI Gateway calls match" for a
+  // window holding hundreds. The semantics are unchanged — `model` is a
+  // case-insensitive substring match server-side too (verified: `opus`,
+  // `claude-opus-5` and `CLAUDE-OPUS-5` all return the same set).
+  const query = [
+    ["per_page", String(limit)],
+    ["order_by", "created_at"],
+    ["order_by_direction", "desc"]
+  ];
+  if (flags.since)
+    query.push([
+      "start_date",
+      new Date(Date.now() - parseSince(flags.since)).toISOString()
+    ]);
+  if (flags.model) query.push(["model", String(flags.model)]);
+
   const { res, text } = await request(
     "GET",
     acct(`ai-gateway/gateways/${gw}/logs`),
-    {
-      query: [
-        ["per_page", String(limit)],
-        ["order_by", "created_at"],
-        ["order_by_direction", "desc"]
-      ]
-    }
+    { query }
   );
   ensureOk(res, text);
   if (flags.json || flags.raw) return void printBody(text, { raw: flags.raw });
 
   const json = parseJson(text);
-  const rawCount = json?.result?.length ?? 0;
+  // Now the count of calls *matching the filters*, not of everything stored —
+  // which is the number worth printing.
   const total = json?.result_info?.total_count;
-  let logs = json?.result ?? [];
-  if (flags.since) {
-    const cutoff = Date.now() - parseSince(flags.since);
-    logs = logs.filter((l) => Date.parse(l.created_at) >= cutoff);
-  }
-  if (flags.model) {
-    const needle = String(flags.model).toLowerCase();
-    logs = logs.filter((l) => (l.model ?? "").toLowerCase().includes(needle));
-  }
+  const logs = json?.result ?? [];
   if (logs.length === 0) return void out("no AI Gateway calls match");
 
   const byModel = {};
@@ -413,8 +463,9 @@ async function cmdAi(args) {
   out(
     `${logs.length} calls${flags.since ? ` in last ${flags.since}` : ""} · $${cost.toFixed(5)} · ${modelStr}`
   );
+  const filtered = Boolean(flags.since || flags.model);
   out(
-    `${hhmmss(Math.min(...times))} → ${hhmmss(Math.max(...times))}${total != null ? `  ·  ${total} stored` : ""}`
+    `${hhmmss(Math.min(...times))} → ${hhmmss(Math.max(...times))}${total != null ? `  ·  ${total} ${filtered ? "matching" : "stored"}` : ""}`
   );
   out("");
   for (const l of logs) {
@@ -425,9 +476,11 @@ async function cmdAi(args) {
       `${hhmmss(Date.parse(l.created_at))}  ${l.id}  ${(l.model ?? "?").padEnd(24)} ${io} ${c} ${`${l.duration ?? "?"}ms`.padEnd(8)} ${st}`
     );
   }
-  if (rawCount >= limit)
+  // `total` is authoritative now, so this can say what is actually missing
+  // rather than guessing from a page length.
+  if (total != null && total > logs.length)
     out(
-      `\n⚠ hit page limit ${limit} — raise --limit or narrow --since/--model`
+      `\n⚠ showing ${logs.length} of ${total} — raise --limit (max ${AI_MAX_LIMIT}) or narrow --since`
     );
 }
 

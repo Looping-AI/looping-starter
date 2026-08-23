@@ -7,7 +7,7 @@ foundation) and
 capabilities) into a deployable Worker.
 
 The single most useful thing to know: **almost nothing here is framework.** The
-round loop, the durable Subtask DAG, the wave scheduler, the subagent execution,
+round loop, the durable Subtask rows, the concurrent fan-out, the subagent execution,
 the Durable Object body and the task lifecycle are all in core. What lives here is
 what core deliberately refuses to ship — the words, the config values, and which
 plugins each agent installs.
@@ -80,7 +80,7 @@ and (after the core split) it is what holds proactive at ~1.5 MiB instead of ~2.
 ## Working here
 
 ```bash
-npm run check              # wrangler types, prettier, eslint, tsc (src + test)
+npm run check              # wrangler types, prettier, eslint, tsc, comment path refs
 npm test                   # vitest, inside real workerd
 npm run verify:isolation   # per-agent module graphs + size ceilings
 npx wrangler deploy --dry-run --outdir dist
@@ -104,6 +104,36 @@ A contract change is a three-repo publish train (core → plugins → starter), 
 repo is always briefly behind. `PLUGIN_CONTRACT_VERSION` is asserted at DO start so
 a skew fails with a sentence naming the plugin rather than a structural-type error
 several frames away.
+
+---
+
+## Comments
+
+This repo comments heavily, and that is deliberate: a lot of what is here was
+expensive to learn and invisible in the code. The cost is that comments rot, so
+they are held to the same bar as the code.
+
+A comment states a **constraint, a measurement, or a coupling** — something that
+changes a decision. Not what changed, not when, not what a previous version said;
+`git log` owns that. In particular:
+
+- **No changelog.** "This used to…", "removed in 0.8.2", "the design plan called
+  for…" are all history. Write the rule that survives it. A measurement is worth
+  keeping (`npm ci` at 225 s, `check` at 28 s); the date it was taken is not.
+- **No package versions or dates** in prose. They are stale on the next bump and
+  nothing checks them.
+- **One home per fact.** Put the explanation in the file somebody edits when they
+  change that behaviour, and a pointer everywhere else. Four copies of the same
+  paragraph in four files do not stay in step — they diverge, and then the reader
+  cannot tell which one is current.
+- **No counts.** "the three agents", "the four values below", "the ten workspace
+  specs", module counts, spec counts. Every one of these was wrong within a
+  release. Name the thing, not how many there are.
+- **Cross-file references name a real path**, and a path in a comment is
+  checkable — so check it before you write it.
+
+If a comment is longer than the code it explains, ask what decision it is
+protecting. Usually one paragraph of that is doing the work.
 
 ---
 

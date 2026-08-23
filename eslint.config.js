@@ -34,9 +34,36 @@ export default tseslint.config(
     // arc-agi in the proactive bundle and `npm run verify:isolation` starts
     // failing in CI with no obvious cause.
     //
-    // `reactive/turn.ts` is the deliberate exception: arc-player is reactive's
-    // loop with a different soul, and sharing it is the point. It is imported by
-    // path from arc-player, which this allows and a sibling-wide ban would not.
+    // Every agent, not just proactive. The exception this used to carry was
+    // `reactive/turn.ts`, shared with arc-player; that loop now lives in
+    // `@loopingai/core/round` and both import it from there, so there is nothing
+    // left to except and no reason the other three should go unguarded.
+    //
+    // Banning the `@/agents/*` alias outright is safe because no file uses it —
+    // an agent reaches its own modules by relative path.
+    files: ["src/agents/*/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/agents/*"],
+              message:
+                "An agent must not reach into another agent's modules — that is what puts their " +
+                "plugins in its bundle. Anything genuinely shared belongs in src/config.ts or " +
+                "src/round-policy.ts. Use a relative path for this agent's own modules."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    // The sibling ban above is structural; this is the one plugin ban worth
+    // stating in lint as well. `verify:isolation` is the real gate — it reads
+    // the built metafile and knows each agent's whole forbidden set — but it
+    // runs at build time, and this one fails in the editor instead.
     files: ["src/agents/proactive/**/*.ts"],
     rules: {
       "no-restricted-imports": [
@@ -44,14 +71,10 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: [
-                "@/agents/reactive/*",
-                "@/agents/arc-player/*",
-                "@loopingai/plugins/arc-agi"
-              ],
+              group: ["@loopingai/plugins/arc-agi"],
               message:
-                "The proactive agent must not reach into another agent's modules — that is what " +
-                "puts their plugins in its bundle. Anything genuinely shared belongs in src/config.ts."
+                "The proactive agent does not install arc-agi; importing it puts the whole " +
+                "plugin in its bundle and fails npm run verify:isolation."
             }
           ]
         }

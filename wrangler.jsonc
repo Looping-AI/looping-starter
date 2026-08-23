@@ -1,5 +1,5 @@
 /**
- * One Worker, three agents.
+ * One Worker, five agents.
  *
  * The agents are **tenants** of one deployment, routed by `src/index.ts` on the
  * A2A `params.tenant` — they share one origin, one `/a2a` endpoint, one signed
@@ -17,9 +17,32 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
+  // Headroom for git, which now runs here rather than in the container.
+  //
+  // `@cloudflare/computer/git` is isomorphic-git: SHA-1 and inflate in
+  // JavaScript, on this Worker's CPU budget rather than a container's. Measured
+  // before setting this, shallow and single-branch — a 485-file repository
+  // clones in ~1.1 s and a 5,456-file monorepo in ~5.5 s wall-clock, most of it
+  // network — so the default 30 s is not close to binding. This is for the
+  // repository that is an order of magnitude past those, not for the ones that
+  // were measured; a clone that dies at 30 s costs a whole task.
+  "limits": { "cpu_ms": 300000 },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    // Traces, not just logs. The coder's workspace passes
+    // `createCloudflareObserver({ tracing })` to its `Workspace`, which emits a
+    // span per sync push, sync pull, exec spawn and filesystem operation. Those
+    // are the only view into how long a container→host sync actually takes, and
+    // without this flag `tracing` is undefined and the observer silently
+    // degrades to a no-op.
+    "traces": {
+      "enabled": true
+    }
   },
+
+  // No `vars` and no model credential anywhere in this file — every agent reaches
+  // Workers AI through the `AI` binding below, which the platform authenticates.
+  // See the secrets block at the bottom for what remains and what was removed.
 
   // --- shared: required by core itself -------------------------------------
 
@@ -39,6 +62,76 @@
   // `createAgentRuntime({ env })`, so a missing one fails with a sentence naming
   // the plugin rather than at the first tool call, inside a request someone is
   // waiting on.
+
+  // The coder's workspace container, running `computerd` (see Dockerfile).
+  // Requires a PAID Workers plan.
+  //
+  // `class_name` is the Durable Object that *owns* the container, one-to-one:
+  // `@cloudflare/computer` pairs each object's SQLite filesystem with exactly
+  // one container, which is what makes "one workspace per repository" a
+  // structural property rather than a convention.
+  //
+  // `instance_type` is deliberately not "lite": that is the getting-started
+  // default and cannot build a real project.
+  //
+  // The CPU is the exposure, and it was measured: on standard-1 (1/2 vCPU,
+  // 4 GiB) a one-line README change took 59 minutes, of which 52 were inside
+  // `executeChunk` at **0.0% of Worker CPU** — the Worker was asleep awaiting
+  // this container the whole time.
+  // `npm run check` on the target repo is five sequential tools including two
+  // full `tsc` runs; it is recorded at 28 s in `src/workspace/install-plan.ts`
+  // and was observed taking 3-5 minutes here.
+  //
+  // standard-2 is 1 vCPU, 6 GiB, 12 GB disk — double the CPU. It is headroom
+  // rather than a cure: the same run also lost ten minutes to a step timeout and
+  // ran every model call on a rate-limited primary, and both of those are fixed
+  // elsewhere (see `platform.ts` and `config.ts`). If the install gate is still
+  // measured above ~3 minutes, standard-3 (2 vCPU, 8 GiB) is the next step, and
+  // that measurement is what should justify it.
+  //
+  // **Two entries, one Dockerfile.** Cloudflare builds once per entry, so naming
+  // the same file twice produces two images — and `image_vars` is a Docker build
+  // arg, which is how only one of them gets the Claude Code CLI.
+  //
+  // `max_instances` is per entry, so the ceiling is the sum across both entries,
+  // not the number on either line. A container bills by the second and each agent
+  // keys one per caller per repository.
+  "containers": [
+    {
+      "class_name": "CoderWorkspaceDO",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 5
+    },
+    {
+      "class_name": "ClaudeCoderWorkspaceDO",
+      "image": "./Dockerfile",
+      // **Pinned, and the pin is load-bearing.** The egress gateway rewrites
+      // this client's requests and `events.ts` parses its stream; both are
+      // written against a wire shape captured from this exact version. A bump
+      // needs the smoke test re-run — see the Dockerfile.
+      "image_vars": { "CLAUDE_CODE_VERSION": "2.1.238" },
+      "instance_type": "standard-2",
+      "max_instances": 5
+    }
+  ],
+
+  // There is deliberately **no R2 bucket here**, and it is worth saying why,
+  // because a `BACKUP_BUCKET` binding looks like an obvious thing to add.
+  //
+  // The coder used to snapshot its container's `/workspace` to R2 between tasks
+  // so a follow-up skipped the clone and the install. It never worked once in
+  // production: `@cloudflare/sandbox` mounts that archive **inside the
+  // container** over s3fs, so it needs R2 S3-API credentials
+  // (`R2_ACCESS_KEY_ID` and friends) that a Workers R2 binding cannot supply —
+  // the binding has no presign API. Every task logged `InvalidBackupConfigError`.
+  //
+  // Nothing replaces it, because nothing needs to: the checkout now lives in the
+  // workspace object's own SQLite storage, which survives the container and
+  // costs no credential at all. `node_modules` does not — it stays in the
+  // container and is reinstalled when one starts — but that is reproducible from
+  // the lockfile in a few minutes, which is exactly what a snapshot was ever
+  // worth. See `src/workspace/install-plan.ts`.
 
   // `@loopingai/plugins/browser` — used by reactive and arc-player.
   // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free
@@ -74,9 +167,35 @@
     "bindings": [
       { "class_name": "ReactiveAgent", "name": "ReactiveAgent" },
       { "class_name": "ProactiveAgent", "name": "ProactiveAgent" },
-      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" }
+      { "class_name": "ArcPlayerAgent", "name": "ArcPlayerAgent" },
+      { "class_name": "CoderAgent", "name": "CoderAgent" },
+      { "class_name": "ClaudeCoderAgent", "name": "ClaudeCoderAgent" },
+
+      // Not agents — the two workspaces. One object per caller per repository,
+      // holding that checkout's filesystem in SQLite and owning the container
+      // that mounts it. Addressed by `idFromName`, never by the caller alone;
+      // see `workspaceName` in `src/workspace/object.ts`, which both share.
+      //
+      // Two classes rather than one shared class with two bindings, because a
+      // Durable Object namespace is keyed by class name: one class would put
+      // both agents' checkouts in one namespace, and a caller working on the
+      // same repository through both would get one container for both.
+      { "class_name": "CoderWorkspaceDO", "name": "CODER_WORKSPACE" },
+      {
+        "class_name": "ClaudeCoderWorkspaceDO",
+        "name": "CLAUDE_CODER_WORKSPACE"
+      }
     ]
   },
+  // **A tag is applied once, ever.** Anything appended to a tag you have already
+  // deployed is simply never applied: a new class is never created, and the
+  // failure surfaces far from this file — at the first request to the agent, or
+  // at deploy with "New version of script does not export class 'X' which is
+  // depended on by existing Durable Objects". Always add a new tag.
+  //
+  // This has caught people out three times, including `agent:new` itself, which
+  // appends to the last tag because it cannot know what you have deployed. Check
+  // its edit before you deploy.
   "migrations": [
     {
       "tag": "v1",
@@ -85,6 +204,27 @@
         "ProactiveAgent",
         "ArcPlayerAgent"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["CoderAgent", "Sandbox"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["CoderWorkspaceDO"]
+    },
+    {
+      // Removing a class from the code reclaims nothing on its own: every object
+      // it created keeps its storage, unreachable and still billed. This is the
+      // line that frees them, and it is irreversible.
+      "tag": "v4",
+      "deleted_classes": ["Sandbox"]
+    },
+    {
+      // Both classes in one tag because they arrive together: the agent and the
+      // workspace it owns.
+      "tag": "v5",
+      "new_sqlite_classes": ["ClaudeCoderAgent", "ClaudeCoderWorkspaceDO"]
     }
   ],
 
@@ -107,22 +247,55 @@
       "binding": "NOTIFY_WORKFLOW",
       "name": "notify-task",
       "class_name": "NotifyTaskWorkflow"
+    },
+    {
+      "binding": "CODER_WORKFLOW",
+      "name": "coder",
+      "class_name": "CoderWorkflow"
+    },
+    {
+      "binding": "CLAUDE_CODER_WORKFLOW",
+      "name": "claude-coder",
+      "class_name": "ClaudeCoderWorkflow"
     }
   ],
 
   // --- secrets --------------------------------------------------------------
-  // One signing key for the deployment, not one per agent. The card is
-  // per-origin (a well-known URI is per-authority), so the key a gateway pins is
-  // too. Nothing was lost by collapsing three into one: the agents share this
-  // Worker and this `env`, so each could always read the others' keys — separate
-  // ones never expressed a boundary that existed. Generate with `npm run keygen`.
+  // What each of these is, and why there is one signing key rather than one per
+  // agent, is in `.env.example` — the file an operator fills in. Declared here
+  // because `secrets.required` is what drives type generation and `wrangler
+  // dev`'s missing-secret warnings.
   //
-  // What does separate them is the gateway token's tenant claim, which core
-  // checks against the tenant each request addresses.
-  //
-  // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
-  // from — a property of the deployment, like the key.
+  // **There is no model credential here, for any agent.** Every agent in this
+  // Worker reaches Workers AI through the `AI` binding above, which Cloudflare
+  // authenticates for the Worker — there is no key to store, rotate or leak, and
+  // no AI Gateway token either. See `.env.example`, and `CREDENTIAL_COPY` in
+  // `src/agents/coder/workflow.ts` for what an operator is told when the path
+  // refuses a request anyway.
   "secrets": {
-    "required": ["A2A_SIGNING_KEY", "GATEWAY_ORIGINS", "ARC_API_KEY"]
+    "required": [
+      "A2A_SIGNING_KEY",
+      "GATEWAY_ORIGINS",
+      "ARC_API_KEY",
+      // Both coders. `GITHUB_TOKEN` needs contents and pull-request write.
+      //
+      // It is read exclusively inside a workspace object, never crosses an RPC
+      // argument, and never enters the container — `onAuth` checks the host
+      // allowlist at the moment the token is handed over.
+      "GITHUB_TOKEN",
+
+      // claude-coder only, and a credential pool rather than a secret — see
+      // `.env.example`, which is where an operator sets them, for how rotation
+      // works and why neither ever enters the container.
+      //
+      // **Both are listed because this deployment has two.** `secrets.required`
+      // drives type generation and `wrangler dev`'s missing-secret warnings, so
+      // a name left here and unset is typed as a definite string that is
+      // undefined at runtime and warns on every local run. To run on one
+      // credential, drop `_2` here *and* in
+      // `src/agents/claude-coder/claude-code.ts` — one change, two places.
+      "CLAUDE_CODE_OAUTH_TOKEN_1",
+      "CLAUDE_CODE_OAUTH_TOKEN_2"
+    ]
   }
 }

@@ -1,11 +1,14 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import { CHUNK_STEP } from "@loopingai/core";
 import {
   buildCompletedTask,
   buildFailedTask,
   buildNoReplyCompletedTask,
-  createPushChannel,
-  type GatewayIdentity
+  deliverAbandonedTask,
+  deliverTerminalTask,
+  type GatewayIdentity,
+  type TurnPushContext
 } from "@loopingai/core/a2a";
 import type { ProactiveAgent } from "./agent";
 import { proactive } from "./definition";
@@ -26,6 +29,23 @@ import { proactive } from "./definition";
  * (deterministic across dispatch retries), so a re-dispatch never starts a second
  * run — `converse` executes exactly once.
  */
+/**
+ * What this agent tells a user when its retries run out.
+ *
+ * Its own string, and deliberately **not** `roundPolicy.copy.taskFailed`.
+ * `round-policy.ts` says in its own docblock that it belongs to the two round
+ * agents, and it value-imports `DELEGATE_TOOL_NAME` from
+ * `@loopingai/core/subtasks` — so reaching for it here pulled the whole
+ * delegation machinery into an agent that answers in one turn and pushed this
+ * bundle 337 KiB over its ceiling. `npm run verify:isolation` caught it, which
+ * is exactly what that ceiling is for.
+ */
+const ABANDONED_COPY =
+  "I could not finish this — something on the way to the model kept failing " +
+  "and did not recover. Nothing was changed. Sending the request again is " +
+  "worth a try; if it keeps happening, an operator should check the logs for " +
+  "this task id.";
+
 export interface NotifyTaskParams {
   /** The accepted task id (echoed back to the gateway on the callback). */
   taskId: string;
@@ -60,6 +80,14 @@ export interface NotifyTaskDeps {
   ) => DurableObjectStub<ProactiveAgent>;
   /** The deployment's Ed25519 private JWK, for the terminal callback. */
   signingKey: string;
+  /**
+   * What the user is told when the retries run out — see {@link runNotifyTask}.
+   *
+   * A dep rather than a constant because it is user-facing copy, and this
+   * repository keeps that with the agent: core ships none, which is why
+   * `deliverAbandonedTask` takes the words rather than inventing them.
+   */
+  abandonedCopy: string;
 }
 
 export class NotifyTaskWorkflow extends WorkflowEntrypoint<
@@ -72,7 +100,8 @@ export class NotifyTaskWorkflow extends WorkflowEntrypoint<
   ): Promise<void> {
     await runNotifyTask(event.payload, step, {
       resolveAgent: (identity) => proactive.resolveAgent(this.env, identity),
-      signingKey: this.env.A2A_SIGNING_KEY
+      signingKey: this.env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
     });
   }
 }
@@ -89,14 +118,51 @@ export async function runNotifyTask(
   step: WorkflowStep,
   deps: NotifyTaskDeps
 ): Promise<void> {
-  const stub = deps.resolveAgent(p.identity);
+  const push: TurnPushContext = {
+    taskId: p.taskId,
+    contextId: p.contextId,
+    pushUrl: p.pushUrl,
+    pushToken: p.pushToken,
+    jku: p.jku
+  };
+  try {
+    await generateAndDeliver(p, step, deps, push);
+  } catch (cause) {
+    // The same guard core puts inside `runHandleTask`, wired by hand because
+    // this agent's orchestration is its own — a straight line, not a round loop.
+    // Without it, a `generate` step that exhausts its retries unwinds past the
+    // delivery below and leaves the Task in `working` with the user told
+    // nothing, which has cost a production task before.
+    await deliverAbandonedTask(step, cause, {
+      push,
+      signingKey: deps.signingKey,
+      saveTask: (task) => deps.resolveAgent(p.identity).saveTask(task),
+      text: deps.abandonedCopy,
+      // No `sweep`: this agent delegates to nothing, so it has no managed
+      // children to reclaim — the same reason the ordinary delivery omits one.
+      label: "proactive"
+    });
+  }
+}
+
+/** The straight line itself: accept, generate once, deliver. */
+async function generateAndDeliver(
+  p: NotifyTaskParams,
+  step: WorkflowStep,
+  deps: NotifyTaskDeps,
+  push: TurnPushContext
+): Promise<void> {
+  // Resolved **inside** each step body, never once up here. A stub is a live
+  // connection; a severed one never reconnects, so a workflow that hoisted it
+  // spent the rest of its retries talking to a socket that was already gone.
+  const agent = () => deps.resolveAgent(p.identity);
 
   // A Task canceled before this workflow got going stops here, before a single
   // model call is billed. `markWorking` reports the cancellation itself rather
   // than being probed for it, so there is no window between asking and acting.
   const started = await step.do(
     "working",
-    async () => (await stub.markWorking(p.taskId)) === "ok"
+    async () => (await agent().markWorking(p.taskId)) === "ok"
   );
   if (!started) return;
 
@@ -104,8 +170,8 @@ export async function runNotifyTask(
   // failure — it reports one as `failed` — so a throw here is a genuine RPC
   // fault. The push context lets the DO stream intermediate `working` callbacks
   // live during generation; this step returns only how the turn ended.
-  const outcome = await step.do("generate", async () => {
-    const result = await stub.converse(p.text, p.identity, {
+  const outcome = await step.do("generate", CHUNK_STEP, async () => {
+    const result = await agent().converse(p.text, p.identity, {
       taskId: p.taskId,
       contextId: p.contextId,
       pushUrl: p.pushUrl,
@@ -124,40 +190,25 @@ export async function runNotifyTask(
   // message to post. A failed turn must call back as `failed`: A2A v1.0 has no
   // structured task error, so the terminal state is the only signal the gateway
   // has that the turn broke.
-  const task =
-    outcome.kind === "no_reply"
-      ? buildNoReplyCompletedTask(p.taskId, p.contextId)
-      : outcome.kind === "failed"
-        ? buildFailedTask(p.taskId, p.contextId, outcome.text)
-        : buildCompletedTask(p.taskId, p.contextId, outcome.text);
-
-  // Persist the terminal task, unless the caller canceled it meanwhile.
   //
-  // **The guarded write is the cancellation check.** `saveTask` refuses to write a
-  // terminal state over a `canceled` row and says so, doing that read and write in
-  // one synchronous pass inside the DO. Probing with `getTask` first and saving
-  // second would leave a window — between the two calls, and again between this
-  // step and `notify` — in which a `CancelTask` lands and the gateway still
-  // receives a `completed` callback. Keying the notify on "did the write apply"
-  // closes it.
-  const saved = await step.do("complete", async () => stub.saveTask(task));
-  if (!saved) return;
-
-  // Notify the gateway: a card-key-signed callback POST. Retried by the step on a
-  // non-2xx; the gateway is idempotent/single-use, so retries are safe. If it
-  // ultimately fails, the gateway's own reaction backstop clears the pending
-  // marker.
-  //
-  // Signed with the deployment's key. There is one: the card sits at a
-  // well-known URI, which RFC 8615 defines per-authority, so this origin
-  // publishes one card and the gateway pins one key for every agent on it.
-  await step.do("notify", async () => {
-    await createPushChannel(deps.signingKey, {
-      taskId: p.taskId,
-      contextId: p.contextId,
-      pushUrl: p.pushUrl,
-      pushToken: p.pushToken,
-      jku: p.jku
-    }).deliver(task);
+  // The persist-then-notify pair is core's, and the guarded write inside it is
+  // the cancellation check. No `sweep`: this agent delegates to nothing, so it
+  // has no managed children to reclaim.
+  await deliverTerminalTask(step, {
+    push,
+    // One key per deployment: the card sits at a well-known URI, which RFC 8615
+    // defines per-authority, so this origin publishes one card and the gateway
+    // pins one key for every agent on it.
+    signingKey: deps.signingKey,
+    saveTask: (task) => agent().saveTask(task),
+    // Built inside the `complete` step by the helper. Building it out here would
+    // re-stamp `new Date()` on every replay, so `notify` would post a Task that
+    // differs from the one actually stored.
+    terminal: () =>
+      outcome.kind === "no_reply"
+        ? buildNoReplyCompletedTask(p.taskId, p.contextId)
+        : outcome.kind === "failed"
+          ? buildFailedTask(p.taskId, p.contextId, outcome.text)
+          : buildCompletedTask(p.taskId, p.contextId, outcome.text)
   });
 }

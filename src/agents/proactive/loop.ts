@@ -25,8 +25,8 @@ import {
  * The proactive agent's turn: **one** inference over the caller's continuous
  * Session that either answers or deliberately says nothing.
  *
- * This file exists to be different from `../reactive/turn.ts`, and the difference
- * is the argument for the whole package split. Both run on the same core — the
+ * This file exists to be different from `runTurn` in `@loopingai/core/round`,
+ * and the difference is the argument for the whole package split. Both run on the same core — the
  * same Session, the same model pair with its fallback, the same transient-error
  * classification, the same intermediate-content streaming. Nothing about how they
  * *end* is shared:

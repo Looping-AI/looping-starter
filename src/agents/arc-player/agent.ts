@@ -5,6 +5,7 @@ import {
   type RoundPolicy,
   type SubagentClass
 } from "@loopingai/core/round";
+import { makeScorecardStore } from "@loopingai/plugins/arc-agi";
 import { ARC_PLAYER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { plugins } from "./plugins";
@@ -43,5 +44,18 @@ export class ArcPlayerAgent extends RoundAgentBase<Env> {
 
   protected subagentClass(): SubagentClass {
     return ArcPlayerSubagent;
+  }
+
+  /**
+   * Age out the scorecard ledger alongside core's task and subtask rows.
+   *
+   * The plugin owns the retention window and the sweep; it cannot own the
+   * schedule, because a plugin cannot register a cron. This override is the
+   * documented other half — `cleanupOldTasks` runs it weekly. Without it the
+   * `arc_scorecards` rows accumulate for the life of the object.
+   */
+  protected override cleanupAgentState(): void {
+    super.cleanupAgentState();
+    makeScorecardStore(this.ctx.storage).cleanup();
   }
 }

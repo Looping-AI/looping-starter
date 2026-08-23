@@ -186,7 +186,7 @@ ${isRound ? `import { ${pascal}Subagent } from "./subagent";\n` : ""}
  *
  * ${
    isRound
-     ? "A delegating round agent: the loop, the durable Subtask DAG and the\n * subagent execution are all `@loopingai/core/round`. What is *this agent* is\n * the five methods below plus `./plugins.ts` and `./soul.ts`."
+     ? "A delegating round agent: the loop, the durable Subtask rows and the\n * subagent execution are all `@loopingai/core/round`. What is *this agent* is\n * the five methods below plus `./plugins.ts` and `./soul.ts`."
      : "A single-turn agent: it extends `LoopingAgent` directly and writes its own\n * loop, so it carries none of the delegation machinery. Add a `converse` method\n * (or whatever your turn is called) and a workflow that drives it."
  }
  */

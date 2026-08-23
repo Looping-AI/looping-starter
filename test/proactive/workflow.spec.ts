@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
 import { TaskState } from "@a2a-js/sdk";
-import type { GatewayIdentity } from "@loopingai/core/a2a";
+import type { GatewayIdentity, PlainTask } from "@loopingai/core/a2a";
 import { env } from "cloudflare:workers";
 import type { ProactiveAgent } from "@/agents/proactive/agent";
 import { proactive } from "@/agents/proactive/definition";
@@ -72,6 +72,7 @@ interface FakeAgentOptions {
 
 function fakeAgent(options: FakeAgentOptions = {}) {
   const calls: string[] = [];
+  const saved: PlainTask[] = [];
   const stub = {
     async markWorking() {
       calls.push("markWorking");
@@ -89,13 +90,17 @@ function fakeAgent(options: FakeAgentOptions = {}) {
         }
       };
     },
-    async saveTask() {
+    async saveTask(task: PlainTask) {
       calls.push("saveTask");
+      saved.push(task);
       return options.saveTask ?? true;
     }
   } as unknown as DurableObjectStub<ProactiveAgent>;
-  return { stub, calls };
+  return { stub, calls, saved };
 }
+
+/** Stands in for the agent's own copy; the spec only cares that it is delivered. */
+const ABANDONED_COPY = "PROACTIVE ABANDONED COPY";
 
 function params(taskId: string) {
   return {
@@ -118,7 +123,8 @@ describe("a task canceled before the workflow starts", () => {
 
     await runNotifyTask(params("t1"), step, {
       resolveAgent: () => stub,
-      signingKey: env.A2A_SIGNING_KEY
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
     });
 
     // `markWorking` reports the cancellation itself, so the pipeline stops on
@@ -147,7 +153,8 @@ describe("a task canceled while the model is working", () => {
 
     await runNotifyTask(params("t2"), step, {
       resolveAgent: () => stub,
-      signingKey: env.A2A_SIGNING_KEY
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
     });
 
     expect(ran).toContain("complete");
@@ -171,10 +178,39 @@ describe("the ordinary path", () => {
 
     await runNotifyTask(params("t3"), step, {
       resolveAgent: () => stub,
-      signingKey: env.A2A_SIGNING_KEY
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
     });
 
     expect(ran).toEqual(["working", "generate", "complete", "notify"]);
+  });
+});
+
+/**
+ * The third terminal shape, and the one core's own round loop has no equivalent
+ * of — which is why `deliverTerminalTask` takes the Task from its caller rather
+ * than choosing between two itself.
+ */
+describe("a turn that deliberately says nothing", () => {
+  it("still completes and still calls back, carrying no message", async () => {
+    const { stub, saved } = fakeAgent({ saveTask: true });
+    const { step, ran } = fakeStep({
+      cached: { generate: { kind: "no_reply" }, notify: undefined }
+    });
+
+    await runNotifyTask(params("t4"), step, {
+      resolveAgent: () => stub,
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
+    });
+
+    // No shortcut to the end: the gateway's pending row has to resolve whether
+    // or not there is anything to say, so this path runs the same four steps.
+    expect(ran).toEqual(["working", "generate", "complete", "notify"]);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+    // Completed, but with nothing to post.
+    expect(saved[0].status?.message).toBeUndefined();
   });
 });
 
@@ -208,5 +244,81 @@ describe("against the real Durable Object", () => {
         status: { state: TaskState.TASK_STATE_COMPLETED }
       } as Parameters<typeof stub.saveTask>[0])
     ).toBe(false);
+    // Five round trips into a cold Durable Object, the first of which runs
+    // core's whole migration journal. Vitest's 5 s default is enough on an idle
+    // machine and not enough when the pool is running every other spec file
+    // alongside it — which showed up as a timeout here the day an unrelated
+    // seventh spec was added. The test is not slow because anything is wrong;
+    // it is slow because it is the only one that boots a real agent.
+  }, 20_000);
+});
+
+/**
+ * A `generate` step that exhausts its retries must still reach the user.
+ *
+ * `generate` is a durable step: it retries a bounded number of times and then
+ * rethrows. Unguarded, the orchestration unwinds past the delivery and the Task
+ * stays `working` with the user told nothing — a silence that has cost a
+ * production task before.
+ *
+ * `runHandleTask` guards itself, which covers the round agents. This one writes
+ * its own orchestration, so it calls `deliverAbandonedTask` directly — the
+ * reason that helper is exported rather than private to `/round`.
+ */
+describe("a turn whose generate step never stops failing", () => {
+  it("delivers a failed Task instead of leaving it working", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub, saved } = fakeAgent({ saveTask: true });
+    const failing = {
+      ...stub,
+      async converse() {
+        throw new Error("the model refused every attempt");
+      }
+    } as unknown as DurableObjectStub<ProactiveAgent>;
+    const { step, ran } = fakeStep({
+      cached: { "abandoned:notify": undefined }
+    });
+
+    await runNotifyTask(params("t5"), step, {
+      resolveAgent: () => failing,
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
+    });
+
+    expect(ran).toContain("abandoned:complete");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].status?.state).toBe(TaskState.TASK_STATE_FAILED);
+    // The words are this agent's, and the diagnostic is not among them.
+    expect(JSON.stringify(saved[0])).toContain(ABANDONED_COPY);
+    expect(JSON.stringify(saved[0])).not.toContain("refused every attempt");
+  });
+
+  /**
+   * No `sweep` step, because this agent delegates to nothing — the same reason
+   * its ordinary delivery omits one. A `sweep` here would be a durable step name
+   * that exists only to do nothing and could never be removed.
+   */
+  it("runs no sweep, having no managed children", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = fakeAgent({ saveTask: true });
+    const failing = {
+      ...stub,
+      async converse() {
+        throw new Error("boom");
+      }
+    } as unknown as DurableObjectStub<ProactiveAgent>;
+    const { step, ran } = fakeStep({
+      cached: { "abandoned:notify": undefined }
+    });
+
+    await runNotifyTask(params("t6"), step, {
+      resolveAgent: () => failing,
+      signingKey: env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
+    });
+
+    expect(ran).not.toContain("abandoned:sweep");
+    // And never the ordinary delivery's names: those are durable cache keys.
+    expect(ran).not.toContain("complete");
   });
 });

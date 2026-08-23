@@ -1,17 +1,20 @@
 import type { CoreConfigOverrides } from "@loopingai/core";
+// Type-only, so nothing reaches a bundle: these two names are what make a
+// mistyped or renamed tuning field fail at `tsc` instead of being spread into a
+// plugin config and silently ignored.
+import type { RecallTuning } from "@loopingai/plugins/recall";
+import type { TriageTuning } from "@loopingai/plugins/triage";
 
 /**
  * Every value this agent tunes, in one file.
  *
- * Core owns the *shapes* and a working baseline (`DEFAULT_CORE_CONFIG`); what is
- * here is only what this deployment wants different, merged and validated once
- * per Durable Object instance by `resolveConfig` inside `createAgentRuntime`.
- * That is the whole reason these are exported values rather than the bare
- * module-level constants the predecessor repos used: a constant read at import
- * time is not overridable, and it freezes before `env` exists — which on Workers
- * is always.
+ * Core owns the shapes and a working baseline (`DEFAULT_CORE_CONFIG`); this is
+ * only what the deployment wants different, merged and validated once per
+ * Durable Object by `resolveConfig`. Exported values rather than module-level
+ * constants because a constant read at import time is not overridable and
+ * freezes before `env` exists — which on Workers is always.
  *
- * Nothing here is a platform fact. Chunk sizing, step timeouts and the rest live
+ * Nothing here is a platform fact: chunk sizing, step timeouts and the rest live
  * in core's `platform.ts` and are deliberately not tunable.
  */
 
@@ -19,35 +22,24 @@ import type { CoreConfigOverrides } from "@loopingai/core";
  * What every agent in this Worker shares: the model pair and the gateway they
  * are billed and correlated through.
  *
- * **You must choose these. Core ships no default, on purpose.** Which model an
- * agent runs on sets the cost of every turn, the tool-calling reliability the
- * whole control-tool design rests on, and the failure modes the fallback exists
- * to escape. A framework default would be making that call on your behalf,
- * silently, and being wrong for most agents — and a model id frozen into a
- * published package outlives every deprecation until someone bumps the package.
- * Written here, it is read by whoever owns the bill.
+ * **You must choose these — core ships no default.** The model sets the cost of
+ * every turn and the tool-calling reliability the whole control-tool design
+ * rests on, and a model id frozen into a published package outlives every
+ * deprecation until someone bumps it.
  *
- * ## Why this pair
+ * The primary is picked for reliable multi-tool-call behaviour over long
+ * contexts, which is what a delegating round is: a round ends only when the
+ * model calls a control tool, and one that answers in prose instead burns the
+ * whole budget reaching no ending.
  *
- * **Primary — `@cf/zai-org/glm-5.2`.** This loop lives or dies on function
- * calling: a round ends only when the model calls a *control tool*, and a model
- * that answers in prose instead of calling `final_reply` burns the whole budget
- * reaching no ending. GLM is picked for reliable multi-tool-call behaviour over
- * long contexts, which is what a delegating round actually is — read branch
- * results, decide, call one of several endings.
- *
- * **Fallback — `@cf/moonshotai/kimi-k2.7-code`.** Deliberately a *different
- * vendor and family*. The fallback exists for when the primary throws, and the
- * things that make it throw — an outage, a rate limit, a deprecation, a bad
- * deploy of one vendor's serving stack — are correlated within a family. A
- * same-family fallback is a retry wearing a costume; core now refuses an
- * identical pair outright for this reason.
- *
- * ## Changing them
+ * The fallback is a **different vendor and family**, deliberately. What makes a
+ * primary throw — an outage, a rate limit, a deprecation, a bad deploy of one
+ * vendor's serving stack — is correlated within a family, so a same-family
+ * fallback is a retry wearing a costume. Core refuses an identical pair outright.
  *
  * Both must support function calling and tolerate a long system prompt. After
- * changing either, re-read `mainAgentLimits.maxTurns`: a model that needs more
- * steps to reach an ending spends the same budget faster.
+ * changing either, re-read `mainAgentLimits.maxTurns`: a model needing more steps
+ * to reach an ending spends the same budget faster.
  */
 const MODEL = {
   chatModelId: "@cf/zai-org/glm-5.2",
@@ -62,11 +54,10 @@ const MODEL = {
  * The reactive agent: delegates, so it pays for rounds of subagent work and is
  * bounded across all of them.
  *
- * `compactAfterTokens` is tight on purpose. A delegating agent accumulates
- * branch results fast, and the invariant core asserts —
- * `compactAfterTokens - compactTailTokens >= 10_000` — is what keeps compaction
- * from firing on a near-empty middle. Never lower the threshold without lowering
- * the tail with it.
+ * `compactAfterTokens` is tight on purpose — a delegating agent accumulates
+ * branch results fast. Core asserts `compactAfterTokens - compactTailTokens >=
+ * 10_000`, which keeps compaction from firing on a near-empty middle, so never
+ * lower the threshold without lowering the tail with it.
  */
 export const REACTIVE_CONFIG: CoreConfigOverrides = {
   model: MODEL,
@@ -96,19 +87,152 @@ export const ARC_PLAYER_CONFIG: CoreConfigOverrides = {
 };
 
 /**
+ * The coder's models — a distinct pair from the shared `MODEL` above.
+ *
+ * Same provider and same primary as every other agent here, so what this block
+ * actually expresses is one difference: **a much larger output ceiling**. A
+ * coding round writes a file and a test in the same turn, and a truncated patch
+ * reads as a finished one, so 32k rather than reactive's 16k. Everything else
+ * is deliberately the house default, and the pair is chosen on the same grounds
+ * as `MODEL` — read that first.
+ *
+ * Do not point this at a Claude model. Reaching one on a subscription
+ * credential is what `claude-coder` exists for and needs a whole container to
+ * do safely; see `src/agents/claude-coder/agent.ts`.
+ */
+const CODER_MODEL = {
+  chatModelId: "@cf/zai-org/glm-5.2",
+  fallbackChatModelId: "@cf/moonshotai/kimi-k2.7-code",
+  /** AI Gateway slug; `"default"` auto-provisions on first request. */
+  aiGatewayId: "default",
+  // Generous: a round that writes a file and a test spends output tokens on both,
+  // and a truncated patch reads as a finished one.
+  maxOutputTokens: 32_000,
+  reasoningEffort: "high"
+} as const;
+
+/**
+ * The coder: long rounds, few subtasks, and a real container underneath.
+ *
+ * Every budget here is larger than reactive's except `maxSubtasks`, and that
+ * asymmetry is the point. A coding round is slow — a container boot, an install,
+ * a test suite — so turns and wall clock have to be generous or the agent is
+ * killed mid-build. But coding subtasks are *heavy*, not numerous: eight parallel
+ * subagents editing one checkout is a merge conflict, not fan-out.
+ *
+ * `toolOutputWindow` is wider than reactive's because a build log the model can
+ * no longer see is a build log it will run again.
+ */
+export const CODER_CONFIG: CoreConfigOverrides = {
+  model: CODER_MODEL,
+  mainAgentLimits: { maxTurns: 60, maxWallMs: 3 * 60 * 60_000 },
+  subagentLimits: { maxTurns: 80, maxWallMs: 90 * 60_000 },
+  toolOutputWindow: 6,
+  maxSubtasks: 4,
+  session: {
+    memoryMaxTokens: 2_000,
+    compactAfterTokens: 60_000,
+    compactTailTokens: 12_000
+  }
+};
+
+/**
+ * The claude-coder agent: the coder's shape, with the *work* done elsewhere.
+ *
+ * The parent round loop is Workers AI like every other agent here — it
+ * orchestrates, reviews and talks to the user, and none of that needs a frontier
+ * model. What is different is that its subtasks do not run core's tool loop at
+ * all: each one is a Claude Code session inside the workspace container, driven
+ * by `@loopingai/plugins/claude-code`. See {@link CLAUDE_CODE_SESSION} for the
+ * numbers that bound *that*, which are not these.
+ *
+ * `maxSubtasks: 1`, and it is the one value here worth arguing about.
+ *
+ * Every other delegating agent in this repo fans out. This one must not, and the
+ * reason is the shared checkout: two Claude Code sessions in one container are
+ * two autonomous agents editing one working tree, each running the project's
+ * test suite over the other's half-finished edits. The coder only *advises* its
+ * model against this because its subagents are short and closely briefed; here
+ * they are long and unsupervised, so the advice becomes a limit.
+ *
+ * Raise it only alongside a story for how two sessions avoid each other.
+ */
+export const CLAUDE_CODER_CONFIG: CoreConfigOverrides = {
+  ...CODER_CONFIG,
+  maxSubtasks: 1
+};
+
+/**
+ * What bounds one Claude Code session — and **this is the whole list**.
+ *
+ * Worth being explicit, because the obvious place to look is wrong. Core's
+ * `subagentLimits.maxWallMs` and the recipe's own `limits` do **not** apply:
+ * they are metered by the resumable runner, and this agent's `executeChunk`
+ * bypasses it entirely to drive the CLI instead. A limit written there is inert.
+ *
+ * Nor is there a spend cap, deliberately — an estimate in dollars is a guess
+ * about a subscription bucket nobody can read, and the gateway reads the bucket
+ * directly, rotating credentials when Anthropic says one is spent. That bounds
+ * the deployment, not a session.
+ *
+ * So `timeoutMs` is the ceiling, and the container runtime enforces it.
+ */
+export const CLAUDE_CODE_SESSION = {
+  /**
+   * Opus 5, deliberately: reaching it on a subscription credential is the whole
+   * reason this agent exists, so spending the bucket on something cheaper would
+   * be paying the setup cost and declining the return.
+   *
+   * The cost is worth stating. A 5-hour bucket is roughly $10 of
+   * Opus-equivalent and a substantial coding subtask is plausibly $1-5, so
+   * expect two to four per bucket per credential. `claude-sonnet-5` stretches
+   * that several times further if a deployment would rather have volume.
+   */
+  model: "claude-opus-5",
+
+  /**
+   * Forty minutes, and **this is the ceiling on a session** — see above.
+   *
+   * Longer than the workspace base's twenty-minute default container-idle
+   * window, so `ClaudeCoderWorkspaceDO` raises its own above this value —
+   * derived from this constant, so the two cannot drift.
+   *
+   * That derivation is the point: a session stays detached for its whole
+   * timeout, so anything narrower makes the container's survival depend on
+   * chunk boundaries arriving on time, and one retried or delayed chunk stops
+   * it under live work.
+   */
+  timeoutMs: 40 * 60_000,
+
+  /**
+   * How long one chunk blocks before checkpointing and yielding.
+   *
+   * Inside `CHUNK_SOFT_MS` (15 min) and well inside `STEP_TIMEOUT_MS` (30 min).
+   * Forty minutes of session is about five chunks against
+   * `MAX_CHUNKS_PER_BRANCH` (40), so the structural backstop is nowhere near
+   * binding — which is the point: a chunk that returned the moment it had
+   * nothing to read would burn all forty in seconds.
+   */
+  windowMs: 8 * 60_000,
+
+  /**
+   * Advisory, all three. Claude Code's own subagent tree is invisible to
+   * Looping's scheduler and multiplies whatever they say; `timeoutMs` is what
+   * actually stops a run.
+   */
+  maxTurns: 60,
+  maxSubagentDepth: 1,
+  maxConcurrentSubagents: 4
+} as const;
+
+/**
  * The proactive agent: single-turn, no delegation, so most of the delegation
  * config above is inert for it and left at core's baseline.
  *
- * **Same primary, different fallback — `@cf/google/gemma-4-26b-a4b-it`.** This
- * agent answers in one turn in a live channel, so its fallback is chosen for
- * latency rather than depth: when the primary is down, a fast adequate reply
- * beats a slow strong one that arrives after the conversation moved on. That is
- * the opposite trade from reactive, whose fallback still has to hold a
- * delegating round together, and it is exactly the kind of per-agent judgement
- * a framework default cannot make.
- *
- * Still a different vendor from the primary, for the same correlated-failure
- * reason as reactive's.
+ * Its fallback is chosen for **latency rather than depth** — this agent answers
+ * in one turn in a live channel, where a fast adequate reply beats a strong one
+ * arriving after the conversation moved on. The opposite trade from reactive,
+ * whose fallback still has to hold a delegating round together.
  *
  * `compactAfterTokens` is far higher because a channel conversation is long and
  * cheap per message, unlike a delegating agent's branch results.
@@ -123,13 +247,10 @@ export const PROACTIVE_CONFIG: CoreConfigOverrides = {
 };
 
 /**
- * The proactive loop's step ceiling.
- *
- * Starter-owned rather than a `CoreConfig` field, and that is the point: core
- * ships `AgentLimits` in turns and wall-clock because those are the only two
- * currencies both loops agreed on. How *this* loop bounds itself is its own
- * business — reactive meters a mutable `TurnBudget` across rounds instead, and
- * neither shape belongs to core.
+ * The proactive loop's step ceiling — starter-owned, not a `CoreConfig` field.
+ * Core ships `AgentLimits` in turns and wall-clock because those are the only
+ * currencies both loops agreed on; reactive meters a mutable `TurnBudget` across
+ * rounds instead, and neither shape belongs to core.
  */
 export const MAX_STEPS = 8;
 
@@ -149,7 +270,7 @@ export const RECALL = {
    * full original message.
    */
   metadataTextMax: 2000
-} as const;
+} as const satisfies RecallTuning;
 
 /**
  * `@loopingai/plugins/triage` tuning — the proactive agent's pre-turn gate.
@@ -161,4 +282,4 @@ export const TRIAGE = {
   modelId: "@cf/qwen/qwen3-30b-a3b-fp8",
   historyMessages: 12,
   messageMaxChars: 500
-} as const;
+} as const satisfies TriageTuning;

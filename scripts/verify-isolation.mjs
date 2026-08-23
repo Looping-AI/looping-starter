@@ -4,7 +4,7 @@
  *
  * ## What this actually checks, and why it is not the obvious thing
  *
- * This Worker deploys as **one bundle containing all three agents**, so grepping
+ * This Worker deploys as **one bundle containing every agent**, so grepping
  * `dist/` for "arc-agi" would always find it and prove nothing. The invariant
  * that matters is the one a user relies on the moment they delete the two agents
  * they don't want: *each agent's graph pulls in only the plugins that agent
@@ -48,8 +48,19 @@ const AGENTS = [
       "src/agents/reactive/workflow.ts",
       "src/agents/reactive/subagent.ts"
     ],
-    forbidden: [plugin("arc-agi"), plugin("triage")],
-    maxBytes: 3_700_000
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("computer"),
+      plugin("repo"),
+      "@cloudflare/computer"
+    ],
+    // Re-baselined when `splitting` was turned on above, not because this agent
+    // grew: the old number simply never counted the chunks it reaches through a
+    // dynamic `import()`. Measured 3687 KiB the first time it was weighed
+    // honestly, against a 3613 KiB ceiling it had been quietly over. ~8% over
+    // that measurement, the headroom every entry here runs with.
+    maxBytes: 4_080_000
   },
   {
     name: "proactive",
@@ -69,7 +80,10 @@ const AGENTS = [
     forbidden: [
       plugin("arc-agi"),
       plugin("workspace"),
+      plugin("computer"),
+      plugin("repo"),
       "@cloudflare/shell",
+      "@cloudflare/computer",
       core("round")
     ],
     maxBytes: 1_750_000
@@ -81,8 +95,102 @@ const AGENTS = [
       "src/agents/arc-player/subagent.ts"
     ],
     // No triage, no browser, no recall: this agent plays games.
-    forbidden: [plugin("triage"), plugin("browser"), plugin("recall")],
+    forbidden: [
+      plugin("triage"),
+      plugin("browser"),
+      plugin("recall"),
+      plugin("computer"),
+      plugin("repo"),
+      "@cloudflare/computer"
+    ],
     maxBytes: 3_300_000
+  },
+  {
+    name: "coder",
+    entries: [
+      "src/agents/coder/agent.ts",
+      "src/agents/coder/workflow.ts",
+      "src/agents/coder/subagent.ts",
+      // The workspace object is a deployed class of this agent's too, and
+      // omitting it left the one assertion below that names `/claude-code`
+      // unable to fail: the shared base arrives in this graph anyway (via
+      // `workspaceName` in `agent.ts`), but the *subclass* did not, so an import
+      // added only there was neither leak-checked nor size-counted.
+      "src/agents/coder/workspace-do.ts"
+    ],
+    // No arc-agi, no triage, no recall — and no `/workspace`, which is the one
+    // worth stating: the computer plugin is this agent's filesystem, and having
+    // both would hand the model two unrelated ones with no way to tell from a
+    // path which it is addressing.
+    //
+    // `/claude-code` is the newest entry and the one doing the most work. Both
+    // coders now share `src/workspace/object.ts`, and the whole point of that
+    // base is that it knows nothing about Claude Code: the egress policy arrives
+    // through a config seam, and only `claude-coder`'s subclass fills it in. If
+    // this ever fails, the shared base has grown an import that belongs in a
+    // subclass — which would also put an Anthropic credential path in an agent
+    // that has no business with one.
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("recall"),
+      plugin("workspace"),
+      plugin("claude-code"),
+      "@cloudflare/shell"
+    ],
+    // Higher than its siblings because it is the only agent carrying a container
+    // client and a second model provider — but still a real ceiling, ~8% over
+    // the measured size, the same headroom the others run with. Raise it
+    // deliberately, with the dependency bump that caused it, never to make a red
+    // build go green.
+    //
+    // Moved 4300 → 5450 KB in two steps, both deliberate and worth separating:
+    //   +111 KiB  turning on `splitting` — weight this agent already carried
+    //             through dynamic imports and this script could not see.
+    //   +608 KiB  `@cloudflare/computer/git` in the workspace DO, which bundles
+    //             isomorphic-git so that clone, fetch and push run on this side
+    //             of the container boundary and the forge token never crosses
+    //             it. Bought knowingly: it is the cost of the credential never
+    //             being readable by a shell the model controls.
+    // Measured 4918 KiB after both.
+    //
+    // Raised when `workspace-do.ts` was added to `entries` above. That moved the
+    // *measurement*, not the agent: the deployed bytes are unchanged and the
+    // check simply stopped being blind to one of its classes. Measured 5185 KiB
+    // after, which the old 5322 KiB ceiling left only 2.6% of headroom over —
+    // too tight for the ~8% every other entry here runs with, so it would have
+    // gone red on the next dependency bump for no real reason.
+    maxBytes: 5_740_000
+  },
+  {
+    name: "claude-coder",
+    entries: [
+      "src/agents/claude-coder/agent.ts",
+      "src/agents/claude-coder/workflow.ts",
+      "src/agents/claude-coder/subagent.ts",
+      // Included for the reason the coder's is, and more sharply: this subclass
+      // is where the credential-egress gateway is wired, so it is the single
+      // file this check most needs to be watching.
+      "src/agents/claude-coder/workspace-do.ts"
+    ],
+    // The coder's list, minus `recall` — this agent installs it, for the reason
+    // in its `plugins.ts`. No `/workspace` for the same reason as the coder: the
+    // computer plugin is this agent's filesystem and two would be ambiguous.
+    //
+    // No `arc-agi`, no `triage`. Nothing here forbids `/claude-code`, obviously
+    // — this is the one agent that installs it, and the coder's entry above is
+    // the other half of that pair.
+    forbidden: [
+      plugin("arc-agi"),
+      plugin("triage"),
+      plugin("workspace"),
+      "@cloudflare/shell"
+    ],
+    // Sized like the coder's, which is the right comparison: same container
+    // client, same isomorphic-git, same round loop. What it adds over the coder
+    // is `/recall` and `/claude-code`, and what it drops is nothing.
+    // Re-baseline against a measurement, never to make a red build green.
+    maxBytes: 5_800_000
   }
 ];
 
@@ -100,40 +208,73 @@ let leakFailed = false;
 let sizeFailed = false;
 
 for (const agent of AGENTS) {
-  const result = await build({
-    entryPoints: agent.entries.map((e) => path.join(root, e)),
-    bundle: true,
-    write: false,
-    metafile: true,
-    // Never written (`write: false`), but esbuild requires it whenever there is
-    // more than one entry point.
-    outdir: path.join(root, ".isolation-check"),
-    format: "esm",
-    // Resolve the way wrangler does. `platform: "neutral"` applies no export
-    // conditions at all, which makes perfectly-installed packages (`partyserver`,
-    // via `agents`) look unresolvable — and a check that cannot resolve the graph
-    // cannot measure it.
-    platform: "browser",
-    conditions: ["workerd", "worker", "browser", "import", "module", "default"],
-    mainFields: ["module", "main"],
-    target: "es2022",
-    external: EXTERNAL,
-    // Required, not cosmetic. The Agents SDK resolves a facet through
-    // `ctx.exports[this.constructor.name]`, so a build that minifies class
-    // identifiers turns `ArcPlayerSubagent` into `_a` and the lookup fails at
-    // runtime. Keeping names here also keeps this measurement honest against the
-    // real deploy, which does the same.
-    keepNames: true,
-    // Minified, so the ceiling is a number about the *deploy* rather than about
-    // source formatting. Unminified sizes drift with comments and would make the
-    // budget react to documentation.
-    minify: true,
-    absWorkingDir: root,
-    logLevel: "silent"
-  });
+  const results = [];
+  for (const entry of agent.entries)
+    results.push(
+      await build({
+        entryPoints: [path.join(root, entry)],
+        bundle: true,
+        write: false,
+        metafile: true,
+        // Never written (`write: false`), but esbuild requires it whenever a build
+        // can emit more than one file — which `splitting` makes true of all of them.
+        outdir: path.join(root, ".isolation-check"),
+        format: "esm",
+        // Load-bearing, and the reason this file once measured a lie.
+        //
+        // Without it esbuild cannot emit chunks, so a module reached only through a
+        // dynamic `import()` is parsed — it still appears in `metafile.inputs`, so
+        // the isolation half of this check always saw it — and then dropped from the
+        // output. `@cloudflare/computer/git` lazy-loads its bundled isomorphic-git
+        // exactly that way, and wiring it into the coder moved the real deploy by
+        // ~800 KiB while this script reported no change at all. A ceiling that
+        // cannot see the largest thing anyone has added to a bundle is not a
+        // ceiling.
+        //
+        // It is paired with building one entry point at a time below. `splitting`
+        // across all three at once would also hoist what they *share* into one
+        // chunk, which counts shared code once instead of once per entry and would
+        // silently redefine every ceiling in this file. One entry per build keeps
+        // the old scale and adds only what was missing.
+        splitting: true,
+        // Resolve the way wrangler does. `platform: "neutral"` applies no export
+        // conditions at all, which makes perfectly-installed packages (`partyserver`,
+        // via `agents`) look unresolvable — and a check that cannot resolve the graph
+        // cannot measure it.
+        platform: "browser",
+        conditions: [
+          "workerd",
+          "worker",
+          "browser",
+          "import",
+          "module",
+          "default"
+        ],
+        mainFields: ["module", "main"],
+        target: "es2022",
+        external: EXTERNAL,
+        // Required, not cosmetic. The Agents SDK resolves a facet through
+        // `ctx.exports[this.constructor.name]`, so a build that minifies class
+        // identifiers turns `ArcPlayerSubagent` into `_a` and the lookup fails at
+        // runtime. Keeping names here also keeps this measurement honest against the
+        // real deploy, which does the same.
+        keepNames: true,
+        // Minified, so the ceiling is a number about the *deploy* rather than about
+        // source formatting. Unminified sizes drift with comments and would make the
+        // budget react to documentation.
+        minify: true,
+        absWorkingDir: root,
+        logLevel: "silent"
+      })
+    );
 
-  const inputs = Object.keys(result.metafile.inputs);
-  const bytes = result.outputFiles.reduce((n, f) => n + f.contents.length, 0);
+  const inputs = [
+    ...new Set(results.flatMap((r) => Object.keys(r.metafile.inputs)))
+  ];
+  const bytes = results.reduce(
+    (n, r) => n + r.outputFiles.reduce((m, f) => m + f.contents.length, 0),
+    0
+  );
 
   const leaked = agent.forbidden.filter((needle) =>
     inputs.some((input) => input.includes(needle))
@@ -172,7 +313,7 @@ if (leakFailed) {
       "imports a plugin and `@loopingai/plugins` has no root barrel, so this is " +
       "almost always one agent importing another agent's module — follow the " +
       "`via` lines. Anything genuinely shared by two agents belongs in " +
-      "src/round-agent/ or src/, never in a sibling's directory."
+      "src/workspace/, src/config.ts or src/round-policy.ts, never in a sibling's directory."
   );
 }
 if (sizeFailed) {

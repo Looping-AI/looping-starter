@@ -8,6 +8,9 @@ import {
   GATEWAY_ORIGIN,
   TEST_AGENT_PRIVATE_JWK
 } from "@loopingai/core/testing/fixtures";
+// Node-realm half of the VCR harness: it reaches `node:fs` to read and write
+// cassettes, which workerd has no equivalent of.
+import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
 
 /**
  * The whole suite runs in the Workers runtime (workerd via miniflare) through a
@@ -28,6 +31,43 @@ import {
 process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
 process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
 process.env.ARC_API_KEY ??= "test-key";
+// The coder's. Never real: nothing in the suite reaches GitHub — the repo tools
+// are tested against an injected `exec`. It exists only so `secrets.required` is
+// satisfied and the pool stops warning.
+//
+// No model credential appears here because this Worker holds none: every agent
+// reaches Workers AI through the `AI` binding, which the platform authenticates.
+//
+// This Worker's *own* origin has no line here on purpose either: core discovers
+// it from the `jku` on each turn, so there is nothing to answer — and a default
+// here would hide the case an operator actually hits.
+process.env.GITHUB_TOKEN ??= "test-token";
+// claude-coder's credential pool. Never real, and nothing in the suite reaches
+// Anthropic — the gateway is tested against a stubbed `fetch` in
+// `@loopingai/plugins`, and no spec here starts a session. Two of them because
+// the pool is two entries in `wrangler.jsonc`'s `secrets.required`, and the pool
+// only ever leaves this Worker through the egress gateway.
+process.env.CLAUDE_CODE_OAUTH_TOKEN_1 ??= "sk-ant-oat01-test-1";
+process.env.CLAUDE_CODE_OAUTH_TOKEN_2 ??= "sk-ant-oat01-test-2";
+
+/**
+ * The recorder, and the reason the suite cannot reach the network by accident.
+ *
+ * Every outbound fetch flows through this one Miniflare hook. With no active
+ * cassette it is **blocked** rather than forwarded, so a spec that grows a real
+ * HTTP call fails loudly instead of silently depending on someone's credentials
+ * and an internet connection.
+ *
+ * `outboundService` is the hook, never `fetchMock`: that option is gone, and an
+ * unknown key under `miniflare` is ignored rather than rejected — so reaching
+ * for it again would disable this silently rather than fail.
+ */
+const vcr = createVcr({
+  snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),
+  record: recordFromEnv(),
+  // What makes a cassette safe to commit, and why replay needs no credentials.
+  excludeHeaders: ["authorization", "x-api-key", "cookie", "set-cookie"]
+});
 
 export default defineConfig({
   resolve: {
@@ -46,6 +86,7 @@ export default defineConfig({
       // calls it, but nothing is attempted at test-file startup.
       remoteBindings: false,
       miniflare: {
+        outboundService: vcr.outboundService,
         // Test-only Durable Object bindings for the subagent facet classes.
         //
         // In production they need NO binding and NO `new_sqlite_classes` entry —
@@ -62,12 +103,23 @@ export default defineConfig({
           ARC_PLAYER_SUBAGENT: {
             className: "ArcPlayerSubagent",
             useSQLite: true
+          },
+          CODER_SUBAGENT: {
+            className: "CoderSubagent",
+            useSQLite: true
+          },
+          CLAUDE_CODER_SUBAGENT: {
+            className: "ClaudeCoderSubagent",
+            useSQLite: true
           }
         }
       }
     })
   ],
   test: {
-    include: ["test/**/*.spec.ts"]
+    include: ["test/**/*.spec.ts"],
+    // Node realm. Last chance to flush a cassette; each is already written when
+    // its test releases it, so this is only a safety net.
+    globalSetup: ["@loopingai/core/testing/vcr-global-setup"]
   }
 });

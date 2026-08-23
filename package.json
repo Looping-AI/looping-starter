@@ -2,7 +2,7 @@
   "name": "looping-starter",
   "version": "0.1.0",
   "private": true,
-  "description": "A working, deployable Looping agent on Cloudflare Workers. Three example agents mounted in one Worker, on @loopingai/core and @loopingai/plugins.",
+  "description": "A working, deployable Looping agent on Cloudflare Workers. Five example agents mounted in one Worker, on @loopingai/core and @loopingai/plugins.",
   "license": "GPL-3.0-only",
   "author": "Looping AI",
   "homepage": "https://github.com/Looping-AI/looping-starter#readme",
@@ -18,11 +18,12 @@
     "keygen": "looping-keys",
     "format": "prettier --write .",
     "lint": "eslint .",
-    "check": "wrangler types --check && prettier --check . && eslint . && tsc && tsc -p test/tsconfig.json",
+    "check": "wrangler types --check && prettier --check . && eslint . && tsc && tsc -p test/tsconfig.json && node scripts/verify-references.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:record": "RECORD=1 vitest run recorded.spec.ts",
     "verify:isolation": "node scripts/verify-isolation.mjs",
+    "verify:references": "node scripts/verify-references.mjs",
     "link:local": "node scripts/link-local.mjs",
     "cf": "node scripts/cf.mjs",
     "prepare": "husky",
@@ -31,9 +32,11 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.0.1",
+    "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
-    "@loopingai/core": "^0.5.0",
-    "@loopingai/plugins": "^0.3.0",
+    "@loopingai/core": "^0.8.2",
+    "@loopingai/plugins": "^0.6.0",
+    "@platformatic/vfs": "^0.4.0",
     "agents": "^0.20.1",
     "ai": "^7.0.52",
     "drizzle-orm": "^0.45.2",
@@ -51,7 +54,7 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.66.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.119.0"
+    "wrangler": "^4.120.1"
   },
   "engines": {
     "node": ">=24"
@@ -61,6 +64,7 @@
     "fsevents": false,
     "sharp": false,
     "workerd": false,
-    "core-js-pure": false
+    "core-js-pure": false,
+    "@mongodb-js/zstd": false
   }
 }

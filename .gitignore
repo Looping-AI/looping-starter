@@ -72,12 +72,12 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
+# dotenv environment variable files. Wrangler loads `.env`, then `.env.local`,
+# then — with `--env <name>` — `.env.<name>` and `.env.<name>.local`, so any of
+# them can hold real secrets. Ignore every variant; the two example files are
+# un-ignored further down.
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.env.*
 
 # Cloudflare API credentials for scripts/cf.mjs (kept out of wrangler's dotenv
 # auto-load path so it never overrides deploy auth)
@@ -147,9 +147,10 @@ dist
 
 # Cloudflare
 .wrangler
+# This project keeps its Worker secrets in `.env` (see .env.example). A stray
+# `.dev.vars` would silently win over all of them, so it is never committed.
 .dev.vars
 .dev.vars*
-!.dev.vars.example
 !.env.example
 secrets
 

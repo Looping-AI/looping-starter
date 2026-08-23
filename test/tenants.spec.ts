@@ -14,7 +14,7 @@ import {
 import worker from "@/index";
 
 /**
- * Three agents, one Worker, one endpoint.
+ * Five agents, one Worker, one endpoint.
  *
  * This is the file that pins the architecture the rest of the repo assumes.
  * Every assertion here is about a fact that is *only* true because the agents
@@ -22,7 +22,13 @@ import worker from "@/index";
  * `createA2AWorker` and has nothing to check.
  */
 
-const TENANTS = ["reactive", "proactive", "arc-player"] as const;
+const TENANTS = [
+  "reactive",
+  "proactive",
+  "arc-player",
+  "coder",
+  "claude-coder"
+] as const;
 
 const get = (path: string) =>
   worker.fetch(new Request(`${AGENT_ORIGIN}${path}`), env);
@@ -94,7 +100,7 @@ describe("discovery", () => {
   it("serves one signed stub card at the well-known path", async () => {
     // One card per origin, because a well-known URI is per-authority (RFC 8615)
     // and A2A registered this path with IANA. Serving an agent's card here would
-    // make that agent the one every gateway pinned, for all three.
+    // make that agent the one every gateway pinned, for all of them.
     const res = await get(`/${AGENT_CARD_PATH}`);
     expect(res.status).toBe(200);
 
@@ -175,9 +181,10 @@ describe("per-tenant cards", () => {
         return (await res.json<{ result: { name: string } }>()).result.name;
       })
     );
-    // Three agents, three identities. Sharing one would make them
-    // indistinguishable to a gateway registering them.
-    expect(new Set(names).size).toBe(3);
+    // One identity per agent. Sharing one would make them indistinguishable to
+    // a gateway registering them. Counted off `TENANTS` rather than a literal,
+    // which is what went stale when the fourth agent arrived.
+    expect(new Set(names).size).toBe(TENANTS.length);
   });
 });
 
@@ -200,8 +207,8 @@ describe("tenant isolation", () => {
 
   it("refuses a token minted for a sibling tenant", async () => {
     // The isolation this design buys, and the thing the audience cannot express
-    // — all three tenants share one endpoint and therefore one `aud`, so only
-    // the tenant claim separates them.
+    // — every tenant shares one endpoint and therefore one `aud`, so only the
+    // tenant claim separates them.
     const res = await rpc(sendMessage("proactive"), {
       authorization: `Bearer ${await tokenFor("reactive")}`
     });

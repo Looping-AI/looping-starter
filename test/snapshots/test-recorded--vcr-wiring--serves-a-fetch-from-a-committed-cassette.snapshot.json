@@ -1,0 +1,19 @@
+[
+  {
+    "request": {
+      "method": "GET",
+      "headers": {},
+      "body": "",
+      "url": "https://api.example/starter-wiring"
+    },
+    "responses": [
+      {
+        "statusCode": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "eyJyZWNvcmRlZCI6IHRydWV9"
+      }
+    ]
+  }
+]
