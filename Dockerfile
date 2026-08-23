@@ -143,9 +143,8 @@ RUN if command -v corepack > /dev/null; then \
 # with no `x-api-key`, a specific `anthropic-beta` list carrying
 # `claude-code-20250219` and `oauth-2025-04-20`, and an unauthenticated
 # `HEAD /api/hello` preflight. A version bump can move any of that, so it is a
-# deliberate act that needs the smoke test re-run — see
-# `src/claude-code/README.md` in `@loopingai/plugins`. 2.1.239 exists as of
-# 2026-08-22 and has not been through it.
+# deliberate act that needs the smoke test re-run — see `src/claude-code/README.md`
+# in `@loopingai/plugins`. Do not bump this to pick up a newer CLI without it.
 #
 # `--no-fund --no-audit` for the same reason as the ENV block below: a build log
 # nobody reads is still a build log somebody has to scroll.

@@ -67,8 +67,8 @@ export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
  * **well-known URI**, which RFC 8615 defines per-authority, so only one card per
  * origin is discoverable at the path A2A registered with IANA. A gateway
  * resolving `/.well-known/agent-card.json` against the origin found whichever
- * agent owned the bare path and pinned *its* key for all three — so the other
- * two registered under a name and key that were not theirs, and their push
+ * agent owned the bare path and pinned *its* key for every agent here — so the
+ * rest registered under a name and key that were not theirs, and their push
  * callbacks were rejected after the model work was already done.
  *
  * `AgentInterface.tenant` is the protocol's own answer: "an opaque string used
@@ -79,13 +79,13 @@ export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
  *
  * ## One signing key
  *
- * The three used to hold their own, which never bought anything: they share a
+ * Every agent used to hold its own, which never bought anything: they share a
  * Worker and an `env`, so each could always read the others' secrets. The card
- * is per-origin now and so is the key — `A2A_SIGNING_KEY`, core's default.
+ * is per-origin and so is the key — `A2A_SIGNING_KEY`, core's default.
  *
  * What separates them is the gateway token's tenant claim, checked by core
  * against the tenant the request addressed. That is a real boundary: it is
- * cryptographic, and it holds even though all three share an audience.
+ * cryptographic, and it holds even though they share an audience.
  */
 export default {
   fetch: createA2AWorker<Env>({

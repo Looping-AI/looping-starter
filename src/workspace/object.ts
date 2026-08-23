@@ -53,9 +53,9 @@ import type { RepoGitResult } from "@loopingai/plugins/repo";
  * that drifts in whichever direction the object nobody redeployed recently went.
  *
  * It lives in `src/workspace/` rather than in either agent's directory because
- * `verify:isolation` says so in as many words: *"Anything genuinely shared by
- * two agents belongs in src/round-agent/ or src/, never in a sibling's
- * directory."*
+ * `verify:isolation` fails an agent that imports a sibling's module: the
+ * sibling's plugins come with it. Anything two agents share belongs here or at
+ * the top level, never inside one of them.
  *
  * `@cloudflare/computer` pairs a SQLite-backed virtual filesystem in *this*
  * object's storage with a container running `computerd`, which mounts it over
@@ -1171,6 +1171,18 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
+   * Where the checkout actually is, as recorded when it was installed into.
+   *
+   * The repo plugin reports the authoritative path in `RepoCheckout.dir` and
+   * `startInstall` persists it. Callers outside this object would otherwise
+   * re-derive it from the repository name, which is a second spelling of one
+   * path and drifts the moment a clone lands anywhere but `<workdir>/<repo>`.
+   */
+  async checkoutDir(): Promise<string | undefined> {
+    return (await this.#install.context())?.dir;
+  }
+
+  /**
    * Where the install has got to — the gate `sb_exec` consults before running.
    *
    * Almost a plain read of {@link #installState}. It does **not** probe the
@@ -1190,18 +1202,6 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * in the alarm, which owns no request and outlives every RPC. Keep it that way:
    * **nothing that starts a long job belongs on this path.**
    */
-  /**
-   * Where the checkout actually is, as recorded when it was installed into.
-   *
-   * The repo plugin reports the authoritative path in `RepoCheckout.dir` and
-   * `startInstall` persists it. Callers outside this object would otherwise
-   * re-derive it from the repository name, which is a second spelling of one
-   * path and drifts the moment a clone lands anywhere but `<workdir>/<repo>`.
-   */
-  async checkoutDir(): Promise<string | undefined> {
-    return (await this.#install.context())?.dir;
-  }
-
   async installStatus(): Promise<InstallState> {
     const state = await this.#installState();
     if (state.state !== "failed") return state;

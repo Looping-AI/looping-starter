@@ -10,7 +10,7 @@ import { INSTALL_PLAN } from "@/workspace/install-plan";
  * Everything this object does lives in `src/workspace/object.ts` and is shared
  * with `claude-coder`: one Durable Object, one container, one repository, with
  * the checkout in SQLite and `computerd` mounting it over FUSE at `/workspace`.
- * What is *this agent's* is the four values below.
+ * What is *this agent's* is the config below.
  *
  * The subclass exists rather than the shared class being bound directly because
  * a Durable Object is addressed by class name: two agents need two classes, two
@@ -38,14 +38,3 @@ export class CoderWorkspaceDO extends WorkspaceObjectBase {
     };
   }
 }
-
-/**
- * Re-exported, not moved on.
- *
- * `WORKSPACE_DIR` and `workspaceName` are read by this agent's `plugins.ts`,
- * `agent.ts` and its specs. Keeping the import path they already use means the
- * extraction is invisible to them — which is the point of a behaviour-preserving
- * refactor, and what lets the ten existing workspace specs stand as the
- * regression net for it.
- */
-export { WORKSPACE_DIR, workspaceName } from "@/workspace/object";

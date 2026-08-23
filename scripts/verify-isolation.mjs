@@ -313,7 +313,7 @@ if (leakFailed) {
       "imports a plugin and `@loopingai/plugins` has no root barrel, so this is " +
       "almost always one agent importing another agent's module — follow the " +
       "`via` lines. Anything genuinely shared by two agents belongs in " +
-      "src/round-agent/ or src/, never in a sibling's directory."
+      "src/workspace/, src/config.ts or src/round-policy.ts, never in a sibling's directory."
   );
 }
 if (sizeFailed) {

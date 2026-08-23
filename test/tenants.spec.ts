@@ -100,7 +100,7 @@ describe("discovery", () => {
   it("serves one signed stub card at the well-known path", async () => {
     // One card per origin, because a well-known URI is per-authority (RFC 8615)
     // and A2A registered this path with IANA. Serving an agent's card here would
-    // make that agent the one every gateway pinned, for all three.
+    // make that agent the one every gateway pinned, for all of them.
     const res = await get(`/${AGENT_CARD_PATH}`);
     expect(res.status).toBe(200);
 
@@ -207,8 +207,8 @@ describe("tenant isolation", () => {
 
   it("refuses a token minted for a sibling tenant", async () => {
     // The isolation this design buys, and the thing the audience cannot express
-    // — all three tenants share one endpoint and therefore one `aud`, so only
-    // the tenant claim separates them.
+    // — every tenant shares one endpoint and therefore one `aud`, so only the
+    // tenant claim separates them.
     const res = await rpc(sendMessage("proactive"), {
       authorization: `Bearer ${await tokenFor("reactive")}`
     });

@@ -29,9 +29,8 @@
  * *throws* on a missing cassette rather than skipping, so `npm test` and CI were
  * red for as long as it existed.
  *
- * Model-call coverage now lives where it can run without credentials: the unit
- * specs against core's `mock-model`, and the end-to-end run described in the
- * README.
+ * Model-call coverage lives where it can run without credentials: the unit specs
+ * against core's `mock-model`.
  */
 import { describe, it, expect } from "vitest";
 import { setupRecording } from "@loopingai/core/testing";

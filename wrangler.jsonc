@@ -79,29 +79,24 @@
   // The measurement arrived on 2026-08-11 and confirmed it: a one-line README
   // change took 59 minutes, of which 52 were inside `executeChunk` at **0.0% of
   // Worker CPU** — the Worker was asleep awaiting this container the whole time.
-  // `npm run check` on the target repo is five sequential tools including two full
-  // `tsc` runs; it is recorded at 28 s in `install.ts` and was observed taking
-  // 3-5 minutes here.
+  // `npm run check` on the target repo is five sequential tools including two
+  // full `tsc` runs; it is recorded at 28 s in `src/workspace/install-plan.ts`
+  // and was observed taking 3-5 minutes here.
   //
   // standard-2 is 1 vCPU, 6 GiB, 12 GB disk — double the CPU. It is headroom
   // rather than a cure: the same run also lost ten minutes to a step timeout and
   // ran every model call on a rate-limited primary, and both of those are fixed
-  // elsewhere (see `platform.ts` and `config.ts`). If the per-exec timing added to
-  // `workspace-do.ts` still shows the gate above ~3 minutes, standard-3 (2 vCPU,
-  // 8 GiB) is the next step, and that measurement is what should justify it.
-  //
-  // Cap `max_instances` — a container bills by the second, and the coder now
-  // keys one per caller *per repository*. Note the ceiling scales with the size:
-  // this line is now five standard-2s, not five standard-1s.
+  // elsewhere (see `platform.ts` and `config.ts`). If the install gate is still
+  // measured above ~3 minutes, standard-3 (2 vCPU, 8 GiB) is the next step, and
+  // that measurement is what should justify it.
   //
   // **Two entries, one Dockerfile.** Cloudflare builds once per entry, so naming
   // the same file twice produces two images — and `image_vars` is a Docker build
-  // arg, which is how only one of them gets the Claude Code CLI. See the block
-  // near the end of the Dockerfile for why that beat a second file.
+  // arg, which is how only one of them gets the Claude Code CLI.
   //
-  // `max_instances` is per entry, so the ceiling across this Worker is now **ten**
-  // standard-2 containers, not five. A container bills by the second and each
-  // agent keys one per caller per repository.
+  // `max_instances` is per entry, so the ceiling is the sum across both entries,
+  // not the number on either line. A container bills by the second and each agent
+  // keys one per caller per repository.
   "containers": [
     {
       "class_name": "CoderWorkspaceDO",
@@ -137,7 +132,7 @@
   // costs no credential at all. `node_modules` does not — it stays in the
   // container and is reinstalled when one starts — but that is reproducible from
   // the lockfile in a few minutes, which is exactly what a snapshot was ever
-  // worth. See `src/agents/coder/install.ts`.
+  // worth. See `src/workspace/install-plan.ts`.
 
   // `@loopingai/plugins/browser` — used by reactive and arc-player.
   // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free

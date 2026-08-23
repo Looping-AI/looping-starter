@@ -7,9 +7,9 @@ import type { WorkspaceObjectBase } from "./object";
  * The counterpart to `computerExec`, and the same shape of thing — a function
  * the plugin is handed rather than a module it imports — but on the other side
  * of the trust boundary. `computerExec` sends a command into the container,
- * where the model has a root shell and no credential exists; this sends three
- * specific operations to `CoderWorkspaceDO`, which holds `GITHUB_TOKEN` and
- * never passes it on.
+ * where the model has a root shell and no credential exists; this sends clone,
+ * fetch and push to the `WorkspaceObjectBase` subclass that holds `GITHUB_TOKEN`
+ * and never passes it on.
  *
  * Git runs *there* rather than here because git needs the filesystem, and the
  * filesystem is that object's SQLite: anywhere else, every object read and ref

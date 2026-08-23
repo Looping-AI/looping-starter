@@ -78,7 +78,7 @@ live](#where-the-endpoints-live). Register whatever path this deployment actuall
 
 ## One Worker, several agents
 
-A Worker is not one agent. The three here are **tenants** of one deployment — one origin,
+A Worker is not one agent. The agents here are **tenants** of one deployment — one origin,
 one endpoint, one signing key, one card ([`src/index.ts`](src/index.ts)):
 
 ```ts
@@ -93,7 +93,7 @@ export const reactive = defineAgent({
 // src/index.ts — mounted
 createA2AWorker<Env>({
   manifest: hostManifest,
-  agents: [reactive, proactive, arcPlayer]
+  agents: [reactive, proactive, arcPlayer, coder, claudeCoder]
 });
 ```
 
@@ -143,8 +143,8 @@ the endpoint this deployment actually serves: that URL is the `aud` its tokens c
 That is what this repo did first, and it cannot work. The AgentCard lives at a **well-known
 URI**, which RFC 8615 defines per-authority, so only one card per origin is discoverable at
 the path A2A registered with IANA. A gateway resolving `/.well-known/agent-card.json`
-against the origin found whichever agent owned the bare path and pinned _its_ key for all
-three — so the other two registered under a name and key that were not theirs, and their
+against the origin found whichever agent owned the bare path and pinned _its_ key for every
+agent here — so the rest registered under a name and key that were not theirs, and their
 push callbacks were rejected after the model work was already done.
 
 So the card served there is a **stub** describing the deployment. Each agent's real card —
@@ -166,13 +166,13 @@ siblings — they are named in its `description` for a human, and registered out
 
 ### One key, and what actually separates them
 
-The three used to hold their own signing keys, which never bought anything: they share a
+Each agent used to hold its own signing key, which never bought anything: they share a
 Worker and an `env`, so each could always read the others'. The card is per-origin and so
 is the key.
 
 What separates them is the gateway token's **tenant claim**, checked against the tenant the
 request addressed. That is a real boundary — it is cryptographic, and it holds even though
-all three share an audience. Without it `tenant` would be an unauthenticated field in the
+they share an audience. Without it `tenant` would be an unauthenticated field in the
 request body, and a token minted for one agent would work against any sibling.
 
 > **This needs a gateway that mints the tenant claim and registers agents with a tenant id**
@@ -259,6 +259,7 @@ it means Authenticated Gateway is switched on for the gateway named by
 `aiGatewayId` — switch it off, because the binding does not send a gateway token.
 `CREDENTIAL_COPY` in `src/agents/coder/workflow.ts` says as much to the operator
 at the moment it happens.
+
 The container needs the **Workers Paid** plan and a running Docker daemon on the
 machine that runs `wrangler deploy` — wrangler builds `./Dockerfile` locally and
 pushes the image, so that is your laptop or your CI runner, never Cloudflare:
