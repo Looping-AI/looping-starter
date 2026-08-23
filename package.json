@@ -35,26 +35,26 @@
     "@cloudflare/computer": "^0.2.1",
     "@cloudflare/shell": "0.4.3",
     "@loopingai/core": "^0.8.3",
-    "@loopingai/plugins": "^0.8.0",
+    "@loopingai/plugins": "^0.8.1",
     "@platformatic/vfs": "^0.4.0",
     "agents": "^0.20.1",
-    "ai": "^7.0.52",
+    "ai": "^7.0.77",
     "drizzle-orm": "^0.45.2",
-    "jose": "^6.2.8",
+    "jose": "^6.2.10",
     "workers-ai-provider": "^4.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.20.2",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@types/node": "^26.1.2",
     "esbuild": "^0.28.1",
-    "eslint": "^10.8.0",
+    "eslint": "^10.9.0",
     "husky": "^9.1.7",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.66.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.120.1"
+    "wrangler": "^4.125.0"
   },
   "engines": {
     "node": ">=24"
