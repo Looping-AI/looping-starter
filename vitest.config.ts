@@ -58,9 +58,9 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN_2 ??= "sk-ant-oat01-test-2";
  * HTTP call fails loudly instead of silently depending on someone's credentials
  * and an internet connection.
  *
- * `outboundService` is the hook, never `fetchMock`: pool 0.20 removed that
- * option, and an unknown key under `miniflare` is ignored rather than rejected —
- * which is how a previous wiring of this failed silently.
+ * `outboundService` is the hook, never `fetchMock`: that option is gone, and an
+ * unknown key under `miniflare` is ignored rather than rejected — so reaching
+ * for it again would disable this silently rather than fail.
  */
 const vcr = createVcr({
   snapshotsDir: path.resolve(import.meta.dirname, "test/snapshots"),

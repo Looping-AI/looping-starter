@@ -200,12 +200,11 @@ export const CLAUDE_CODER_CONFIG: CoreConfigOverrides = {
  * they are metered by the resumable runner, and this agent's `executeChunk`
  * bypasses it entirely to drive the CLI instead. A limit written there is inert.
  *
- * Nor is there a spend cap. One was built and deleted (plugins 0.6.0): an
- * estimate in dollars is a guess about a subscription bucket nobody can read,
- * and the gateway now reads the bucket directly — it rotates to the next
- * credential when Anthropic says the current one is spent. That handles the
- * 5-hour and weekly limits; it is not a per-session bound and is not meant as
- * one.
+ * Nor is there a spend cap, deliberately: an estimate in dollars is a guess
+ * about a subscription bucket nobody can read, and the gateway reads the bucket
+ * directly — it rotates to the next credential when Anthropic says the current
+ * one is spent. That handles the 5-hour and weekly limits; it is not a
+ * per-session bound and is not meant as one.
  *
  * So `timeoutMs` is the ceiling, and it is enforced by the container runtime.
  */

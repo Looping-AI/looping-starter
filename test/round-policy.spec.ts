@@ -6,9 +6,7 @@ import { finalRoundNote, roundContract, roundPolicy } from "@/round-policy";
 /**
  * The repo-owned half of the round loop: the words, not the mechanism.
  * `@loopingai/core/round` owns the DAG scheduler and the primary→fallback
- * ladder and pins none of this prose, so it is this file's to keep correct —
- * moved here (from the deleted `test/round-agent/turn.spec.ts`) once the loop
- * itself moved into core.
+ * ladder and pins none of this prose, so it is this file's to keep correct.
  */
 
 describe("roundContract", () => {

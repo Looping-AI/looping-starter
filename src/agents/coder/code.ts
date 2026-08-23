@@ -47,11 +47,11 @@ export const CODE_SUBAGENT_SOUL = [
   // change verified. Nothing was installed and the project's own gate never ran.
   //
   // The fix for that was to mandate `npm run check` *and* `npm test` on every
-  // subtask, and it overcorrected badly. On 2026-08-11 a one-line README edit took
-  // 59 minutes: `npm run check` here is five sequential tools including two full
-  // `tsc` runs, `npm test` boots workerd through vitest-pool-workers, and the
-  // subagent ran both — twice, once per subtask — on half a vCPU. The model was
-  // idle for roughly 85% of the wall clock, blocked in a single `sb_exec`.
+  // subtask, and it overcorrected badly. A one-line README edit took 59 minutes:
+  // `npm run check` here is five sequential tools including two full `tsc` runs,
+  // `npm test` boots workerd through vitest-pool-workers, and the subagent ran
+  // both — twice, once per subtask — on half a vCPU. The model was idle for
+  // roughly 85% of the wall clock, blocked in a single `sb_exec`.
   //
   // So `npm test` is no longer automatic: the default is the project's check plus
   // the specs covering the files touched, and the full suite is for a change whose
@@ -140,25 +140,14 @@ export function code(config: CodeConfig): AgentPlugin {
       key: "code",
       description:
         "A self-contained engineering task inside the existing checkout: implement a change, investigate a failure, or read an unfamiliar area and report how it works.",
-      // **No `params`, and the one it used to declare is worth a headstone.**
-      //
-      // It required `dir`, "the checkout directory this task works in". A model
-      // that omitted it lost the entire delegate call — `subtask add-line: subtask
-      // type "code" has invalid params — dir: expected string, received undefined`
-      // — costing an inference and a retry. That happened in production.
-      //
-      // And nothing read it. Not one thing. `renderSubagentPrompt` builds its
-      // message from budget, task, references and dependency results; `params` is
-      // not a section, so `dir` never reached the subagent's prompt. `params` does
-      // reach tool families through `ToolFamilyContext`, but the computer plugin
-      // takes the workspace off `runtime` instead — see `resolveRuntime` above,
-      // which says so in as many words. The subagent has always learned the
-      // directory from prose in the brief, which is why its soul says "Work in the
-      // directory your task names."
-      //
-      // So this was a required, model-authored field that could fail a round and
-      // was consumed by no one. Deleting it is the whole fix; there is nothing to
-      // replace it with.
+      // No params, and resist adding one. Nothing here would read it:
+      // `renderSubagentPrompt` builds its message from budget, task, references
+      // and dependency results, so a param never reaches the subagent's prompt,
+      // and the computer plugin takes the workspace off `runtime` rather than
+      // off params — see `resolveRuntime` above. A required model-authored field
+      // that nothing consumes can only fail a round; the subagent learns the
+      // directory from prose in the brief, which is why its soul says "Work in
+      // the directory your task names."
       //
       // `null` rather than an omitted key: the contract spells this case out —
       // "Required params for this type, or null when it takes none" — and
@@ -200,11 +189,9 @@ export function code(config: CodeConfig): AgentPlugin {
       // A function, because core injects the live control-tool names rather than
       // letting prompt copy hard-code them and drift.
       //
-      // This copy is the inverse of what it said before the split. It used to
-      // read "most coding requests need no delegation at all — doing the work
-      // yourself is usually faster and better", which was true when the parent
-      // held a shell. It now has none, so that sentence would send the model
-      // looking for tools it does not have.
+      // Keep this consistent with the parent's surface in `plugins.ts`: the
+      // parent has no shell, so copy that suggests doing the work itself would
+      // send the model looking for tools it does not have.
       delegationGuidance: ({ delegateTool, finalReplyTool }) =>
         [
           `Every code change goes through a \`code\` subtask. You have no shell, no editor and no way to write a file — \`${delegateTool}\` is how work happens, and it is not a fallback for work that is too large.`,

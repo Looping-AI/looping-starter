@@ -12,10 +12,10 @@ export class ClaudeCoderWorkflow extends WorkflowEntrypoint<
   HandleTaskParams
 > {
   /**
-   * No `catch` here: core 0.8.2 guards `runHandleTask` itself. This agent needed
-   * that more than most — its rounds are long and its subtasks longer, so a step
-   * that keeps failing burns its retries over a much wider wall-clock window and
-   * the silence at the end is correspondingly more expensive to diagnose.
+   * No `catch` here — see `../coder/workflow.ts`. It matters more for this agent
+   * than most: its rounds are long and its subtasks longer, so a step that keeps
+   * failing burns its retries over a much wider wall-clock window and the
+   * silence at the end is correspondingly more expensive to diagnose.
    */
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,

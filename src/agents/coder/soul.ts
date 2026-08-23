@@ -7,12 +7,11 @@
  * the model would have made, and on a capable model that measurably *reduces*
  * output quality.
  *
- * **That trade was calibrated against Claude, and this agent no longer runs on
- * it** — it moved to `@cf/zai-org/glm-5.2` on 2026-08-20. The argument for
- * terseness is strongest on the strongest models, so if delegated work starts
- * coming back under-specified or the review step starts catching the same class
- * of miss repeatedly, this file is the first place to add structure. Nothing
- * here has been re-tuned for the new pair yet.
+ * The argument for terseness is strongest on the strongest models, and this
+ * trade was calibrated against a stronger pair than `src/config.ts` currently
+ * names. So if delegated work starts coming back under-specified, or the review
+ * step keeps catching the same class of miss, this file is the first place to
+ * add structure.
  *
  * **Nothing about a capability belongs here.** Every installed plugin declares
  * what the agent can do with it and `runtime.renderCapabilities()` collects

@@ -132,8 +132,7 @@ export async function runNotifyTask(
     // this agent's orchestration is its own — a straight line, not a round loop.
     // Without it, a `generate` step that exhausts its retries unwinds past the
     // delivery below and leaves the Task in `working` with the user told
-    // nothing, which is exactly the failure a delegating agent hit in production
-    // on 2026-08-19.
+    // nothing, which has cost a production task before.
     await deliverAbandonedTask(step, cause, {
       push,
       signingKey: deps.signingKey,

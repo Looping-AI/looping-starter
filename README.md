@@ -212,8 +212,7 @@ built graph. Two genuinely different loop shapes on one core.
 ### The two coders need one thing the others do not
 
 A **container**. Everything else about them — the round loop, the durable Subtask
-rows, the model pair — is what every other agent here runs, and that is a recent
-simplification worth knowing about if you are reading older notes.
+rows, the model pair — is what every other agent here runs.
 
 The two differ in exactly one place, and it is one level below the agent: what a
 subtask _is_. A `coder` subtask is a Looping subagent running core's tool loop
@@ -377,10 +376,9 @@ Each edits the four places an agent exists — its directory, [`src/index.ts`](s
 what it touched. `agent:new` then tells you the two things it cannot decide for you: the
 config entry and the agent's soul.
 
-This used to be documented as "three edits, no leftovers". It was five, they were not
-adjacent, and a missed one failed at a different time each: a forgotten DO binding at
+Do it by hand and a missed edit fails at a different time each: a forgotten DO binding at
 deploy, a forgotten `new_sqlite_classes` entry at the first request, a forgotten
-isolation entry _never_ — it just quietly stopped checking that agent.
+isolation entry _never_ — it just quietly stops checking that agent.
 
 Add-then-remove returns all four files byte-for-byte to where they started, which is
 the test that keeps this honest.

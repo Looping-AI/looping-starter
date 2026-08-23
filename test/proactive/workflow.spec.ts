@@ -254,17 +254,16 @@ describe("against the real Durable Object", () => {
 });
 
 /**
- * The gap this agent carried until core 0.8.2.
+ * A `generate` step that exhausts its retries must still reach the user.
  *
  * `generate` is a durable step: it retries a bounded number of times and then
- * rethrows. Nothing above it caught that, so the orchestration unwound past the
- * delivery and the Task stayed `working` with the user told nothing — the same
- * silence a delegating agent hit in production on 2026-08-19, in an agent whose
- * loop is deliberately its own and so did not inherit the fix.
+ * rethrows. Unguarded, the orchestration unwinds past the delivery and the Task
+ * stays `working` with the user told nothing — a silence that has cost a
+ * production task before.
  *
- * Core's `runHandleTask` guards itself now, which covers the four round agents.
- * This one writes its own orchestration, so it calls `deliverAbandonedTask`
- * directly — the reason that helper is exported rather than private to `/round`.
+ * `runHandleTask` guards itself, which covers the round agents. This one writes
+ * its own orchestration, so it calls `deliverAbandonedTask` directly — the
+ * reason that helper is exported rather than private to `/round`.
  */
 describe("a turn whose generate step never stops failing", () => {
   it("delivers a failed Task instead of leaving it working", async () => {

@@ -4,8 +4,7 @@ import { DurableObject, tracing } from "cloudflare:workers";
 // object owes on waking, which is `#dispatch` below.
 import { WakeMap, type WakeIntent } from "@loopingai/core/alarm";
 // The sibling barrel: `WakeMap` owns *when* this object wakes, `JobLifecycle`
-// owns what the install owes on waking. Both were hand-rolled here until core
-// 0.8.1 lifted the second one out.
+// owns what the install owes on waking.
 import { JobLifecycle, type JobContext } from "@loopingai/core/job";
 import {
   Workspace,
@@ -105,10 +104,8 @@ export function workspaceName(callerKey: string, repo?: string): string {
  *
  * Every other key is derived from it by `JobLifecycle`: `install:armed`,
  * `install:last-armed`, `install:context`, and the wake intents `install-run`
- * and `install-watch`. Those were five hand-written constants in this file until
- * core 0.8.1, and the derivation reproduces them exactly — which is the reason
- * adopting the lifecycle needed no storage migration and why the specs that read
- * these keys directly still pass.
+ * and `install-watch`. Changing this value renames all of them, which is a
+ * storage migration — the specs that read these keys directly would fail first.
  */
 const INSTALL_KEY = "install";
 
@@ -342,15 +339,11 @@ export interface WorkspaceObjectConfig {
  *
  * ## Why `backend` and `#workspace` are lazy
  *
- * They were class fields, and a comment here used to say the initialisation
- * order was "load-bearing and safe". It was, while the values were literals in
- * this file. It stops being safe the moment they come from a subclass: **base
- * class fields run before subclass fields**, so a `workspaceConfig()` that
- * reads a subclass field — which `ClaudeCoderWorkspaceDO`'s does, for its
- * credential store — would read `undefined` during this class's field phase.
- *
- * Memoised getters remove the hazard rather than documenting it. A subclass can
- * then implement the seam however it likes, which is the point of having one.
+ * **Base class fields run before subclass fields**, so as plain fields they
+ * would read `undefined` from any `workspaceConfig()` that touches a subclass
+ * field — which `ClaudeCoderWorkspaceDO`'s does, for its credential store.
+ * Memoised getters remove the hazard rather than documenting it, which is what
+ * lets a subclass implement the seam however it likes.
  */
 export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   /**
@@ -399,8 +392,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * time under a staleness bound, a drain that can outlive its job, and a job
    * nobody is draining. The three timings below are this install's. The **drain
    * loop stays here**, because an install runs to completion and writes a single
-   * verdict — a coding-agent run, the other consumer this was lifted out for, is
-   * drained in bounded windows and reports progress between them.
+   * verdict rather than reporting progress between bounded windows.
    *
    * **The alarm runs the install, and that is not a detail.** An install takes
    * ~85 seconds and must not be owned by the request that noticed it was needed:

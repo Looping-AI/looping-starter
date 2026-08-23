@@ -21,20 +21,15 @@ import { coder } from "./definition";
  * ## One of these is barely reachable, and that is the honest thing to write
  *
  * `NonRecoverableKind` is core's, and it names the authorities that can sit
- * between a round and a model: the AI Gateway and the provider. This agent used
- * to have a third — a proxy Worker holding an Anthropic credential — and core
- * carried a `proxy-credential` kind for it. Both were removed in core 0.8.0.
- *
- * It now reaches Workers AI through the `AI` binding, which the platform
- * authenticates. There is no model credential in this Worker at all, so the
- * `credential` arm below describes something that should not be able to happen
- * here, and its copy says so rather than sending an operator to rotate a secret
- * that does not exist.
+ * between a round and a model: the AI Gateway and the provider. This Worker
+ * reaches Workers AI through the `AI` binding, which the platform
+ * authenticates — there is no model credential here at all, so the `credential`
+ * arm below describes something that should not be able to happen, and its copy
+ * says so rather than sending an operator to rotate a secret that does not exist.
  *
  * The `Record` stays total because core made it total on purpose: a kind added
- * upstream must fail to compile here rather than fall through to silence. That
- * cuts both ways — this file had to change when core *removed* one, which is
- * exactly the intended behaviour.
+ * or removed upstream must fail to compile here rather than fall through to
+ * silence.
  */
 const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
   credential: [
@@ -83,11 +78,10 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
 /** The coder agent's task workflow: core's orchestration, its own binding. */
 export class CoderWorkflow extends WorkflowEntrypoint<Env, HandleTaskParams> {
   /**
-   * No `catch` here, deliberately. A transient fault that never stops being one
-   * used to leave the Task in `working` with the user told nothing — this file
-   * carried a hand-written recovery for it, and three sibling agents did not.
-   * Core 0.8.2 moved the guard inside `runHandleTask`, which already held every
-   * input it needed, so the recovery is now something no agent can forget.
+   * No `catch` here, deliberately: `runHandleTask` guards itself. A transient
+   * fault that never stops being one would otherwise leave the Task in `working`
+   * with the user told nothing, and a per-agent recovery is the kind an agent
+   * can be written without.
    */
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,

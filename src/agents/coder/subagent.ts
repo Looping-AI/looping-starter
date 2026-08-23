@@ -20,31 +20,19 @@ export class CoderSubagent extends RecipeSubagentHost<Env> {
    * The **subagent's** list, which is deliberately not its parent's.
    *
    * This is the half with hands: a full shell, a writer, an editor and a
-   * browser — and no git, because the parent owns the history. The base class's
-   * doc comment says "the same plugins as its parent", which was true of every
-   * other agent here and is exactly what this one had to stop doing.
+   * browser — and no git, because the parent owns the history. The base class
+   * documents its default as "the same plugins as its parent"; this agent is the
+   * one that must not take it.
    */
   protected agentPlugins(host: PluginHost<Env>): AgentPlugin[] {
     return subagentPlugins(host);
   }
 
-  /**
-   * There is deliberately **no `modelRuntime` override here**, and that is worth
-   * a note because there used to be one and its absence looks like an omission.
-   *
-   * The property that matters is that a facet runs the same provider as the
-   * round that delegated to it: one left on a different provider would execute
-   * every subtask on a different model, silently, since both satisfy
-   * `ModelRuntime` and nothing downstream can tell them apart. That used to
-   * require an override in both classes pointing at one shared factory, because
-   * the parent was on Claude and core's default was not.
-   *
-   * Now that the coder runs core's Workers AI default like every other agent,
-   * the same guarantee is had by *neither* class overriding the seam — which is
-   * the stronger version of it: there is no second definition to drift.
-   *
-   * `agentConfig` still has to match the parent's, and does: both return
-   * `CODER_CONFIG`, so the pair and the ceilings resolve identically on each
-   * side.
-   */
+  // No `modelRuntime` override, in either this class or the parent. A facet must
+  // resolve the same provider as the round that delegated to it — two overrides
+  // both satisfy `ModelRuntime`, so a drifted pair would run every subtask on a
+  // different model with nothing downstream able to tell. Both inheriting core's
+  // default is the version of that guarantee with no second definition to drift.
+  // `agentConfig` above carries the other half: it must return what the parent
+  // returns, and does.
 }
