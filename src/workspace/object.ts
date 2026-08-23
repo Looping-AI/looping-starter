@@ -27,13 +27,15 @@ import {
 } from "@cloudflare/computer/git";
 import { createCloudflareObserver } from "@cloudflare/computer/observe/cloudflare";
 import {
+  deriveAdvisories,
   installFingerprint,
   pathExists,
   resolveInstallCommand,
   truncateOutput,
   type InstallPlan,
   type InstallProbe,
-  type InstallState
+  type InstallState,
+  type WorkspaceAdvisory
 } from "@loopingai/plugins/computer";
 // The shape `/repo` already defines for exactly this: a git failure is data,
 // because it means git answered. A throw on this path means the object was
@@ -208,6 +210,16 @@ const CONTAINER_IDLE_MS = 20 * 60_000;
  * sentence naming the number beats a write failing somewhere unrelated.
  */
 const STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
+
+/**
+ * How long a `node_modules` probe is reused before it is asked again.
+ *
+ * The probe is a container round-trip and its answer only qualifies an advisory
+ * that is reported either way, so it is worth much less than it costs on a path
+ * that now runs before every tool call. Short enough that an install the
+ * subagent ran by hand is reflected within a turn or two.
+ */
+const TREE_PROBE_TTL_MS = 30_000;
 
 /**
  * The exec id an install runs under.
@@ -860,20 +872,22 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * Refuse to keep filling an object that is running out of room.
+   * Whether this object is out of room, and by how much.
    *
-   * Checked before an install rather than continuously: that is the only
-   * operation here that can move the number meaningfully, and a failure with the
-   * number in it is worth far more than a write erroring further downstream.
+   * Read on **two** paths, and the second is load-bearing. `#beginInstall`
+   * consults it because an install is the operation that can move the number
+   * meaningfully. {@link advisories} consults it on every call, which is what
+   * lets a full workspace reach commands that have nothing to do with
+   * dependencies — the write being lost is rarely a dependency's, so a capacity
+   * fact delivered only alongside install state reaches everything except what
+   * it is about.
+   *
+   * Cheap enough for that: `databaseSize` is a local property read, not a query.
    */
-  #storageHeadroom(): string | undefined {
+  #storageHeadroom(): { bytes: number; capBytes: number } | undefined {
     const bytes = this.ctx.storage.sql.databaseSize;
     if (bytes < STORAGE_CAP_BYTES) return undefined;
-    return (
-      `this workspace holds ${(bytes / 1e9).toFixed(1)} GB, against a 10 GB ` +
-      `per-object limit. Nothing further will be written to it — reclaim it, or ` +
-      `point this caller at a smaller repository.`
-    );
+    return { bytes, capBytes: STORAGE_CAP_BYTES };
   }
 
   // --- the dependency install ------------------------------------------------
@@ -1000,11 +1014,31 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       return claim.current;
     }
 
+    /**
+     * A full workspace refuses the install and **writes nothing**.
+     *
+     * Capacity is not an install outcome, and recording it as one costs twice
+     * over. `skipped` is the variant meaning "this checkout has nothing to
+     * install", so a hard wall about the Durable Object would arrive wearing the
+     * label of a routine fact about the repository; and writing any record here
+     * erases what the record held, so a real install failure would disappear the
+     * moment the object filled up.
+     *
+     * It travels as its own advisory instead, from {@link advisories}, which
+     * reads it fresh on every call and therefore reaches commands that have
+     * nothing to do with dependencies.
+     */
     const full = this.#storageHeadroom();
     if (full) {
-      const state: InstallState = { state: "skipped", reason: full };
-      await this.#install.write(state);
-      return state;
+      console.error(
+        `[${this.#tag}] refusing to install: the workspace is full`,
+        {
+          id: this.ctx.id.toString(),
+          bytes: full.bytes,
+          capBytes: full.capBytes
+        }
+      );
+      return current;
     }
 
     const probe = this.#probe();
@@ -1065,8 +1099,8 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     await this.#install.write(state);
     await this.#install.putContext({
       dir: req.dir,
-      // Kept so a reinstall driven by `installStatus` — which has no caller to
-      // ask — resolves the same command this one did. Without it a repository
+      // Kept so a reinstall the alarm drives — which has no caller to ask —
+      // resolves the same command this one did. Without it a repository
       // with an `INSTALL_PLAN` override would silently fall back to the default
       // on every cold container, installing a different tree than the first time.
       ...(req.repo ? { repo: req.repo } : {}),
@@ -1140,71 +1174,76 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * Where the install has got to — the gate `sb_exec` consults before running.
+   * Everything currently true about this workspace that a caller must not assume
+   * away — the array `sb_exec`, `sb_write` and `sb_edit` all consult.
    *
-   * Almost a plain read of {@link #installState}. It does **not** probe the
-   * container, and a previous version that did is worth a warning.
+   * The policy is not here. `deriveAdvisories` decides which facts matter and
+   * how they are worded; this method gathers what only the object can see and
+   * hands it over. That split is why a host cannot get the severity of its own
+   * workspace wrong.
    *
-   * That version answered the right question — a `done` record describes a
-   * `node_modules` that died with its container, and nothing noticed — but
-   * answered it here, on the gate's path, by calling `startInstall`. The gate polls
-   * this method from a tool call that returns in milliseconds, and `startInstall`
-   * hands its drain to `ctx.waitUntil`, whose lifetime is that invocation's. The
-   * drain outlived its owner and died mid-`npm ci` with "WritableStream RPC stub
-   * was disposed without calling close()", leaving a half-written tree that cost
-   * a nine-minute task to unpick.
+   * **Nothing that starts a long job belongs on this path**, and the rule is
+   * sharper here than anywhere else in the object because every tool call reads
+   * it. `startInstall` in particular must never be reached from here: it hands
+   * its drain to `ctx.waitUntil`, whose lifetime is the invocation's, and an
+   * invocation on this path is a tool call that returns in milliseconds. The
+   * drain outlives its owner, dies mid-`npm ci` with "WritableStream RPC stub
+   * was disposed without calling close()", and leaves a half-written tree.
    *
-   * Detecting a cold container now happens once, in {@link #armInstallIfCold},
-   * off a boolean rather than a container round-trip — and the install itself runs
-   * in the alarm, which owns no request and outlives every RPC. Keep it that way:
-   * **nothing that starts a long job belongs on this path.**
+   * Detecting a cold container happens once, in {@link #armInstallIfCold}, off a
+   * boolean rather than a container round-trip — and the install runs in the
+   * alarm, which owns no request and outlives every RPC.
    */
-  async installStatus(): Promise<InstallState> {
-    const state = await this.#installState();
-    if (state.state !== "failed") return state;
-
-    /**
-     * A `failed` record that is no longer true, cleared.
-     *
-     * `failed` is not inert: the gate renders it as a warning in front of *every*
-     * subsequent command — "anything importing from node_modules will fail". So a
-     * record that outlives the failure it describes actively misinforms, and the
-     * subagent is the one most likely to have made it obsolete, by running the
-     * install itself after being told the host's attempt failed.
-     *
-     * That is not hypothetical. In one run the subagent recovered a corrupt tree
-     * with `rm -rf node_modules && npm ci`, and then read "the dependency install
-     * failed" on every command afterwards — and re-ran a 60-second gate six times.
-     *
-     * Only ever downgrades a `failed` to `done`, and only on positive evidence
-     * that the tree is there. It never invents a success.
-     */
-    const context = await this.#install.context();
-    if (!context?.dir) return state;
-    if (!(await this.#dependenciesPresent(context.dir))) return state;
-
-    console.info(`[${this.#tag}] dependencies are back — clearing failure`, {
-      id: this.ctx.id.toString(),
-      dir: context.dir
+  async advisories(): Promise<readonly WorkspaceAdvisory[]> {
+    const install = await this.#installState();
+    const storage = this.#storageHeadroom();
+    return deriveAdvisories({
+      install,
+      ...(storage ? { storage } : {}),
+      dependencyTreePresent: await this.#treePresentIfItMatters(install)
     });
-    const done: InstallState = {
-      state: "done",
-      command: state.command,
-      exitCode: 0,
-      finishedAt: Date.now(),
-      ms: 0,
-      tail: "dependencies are present; the earlier failure no longer applies"
-    };
-    await this.#install.write(done);
-    return done;
   }
+
+  /**
+   * The `node_modules` probe, run only when its answer changes anything, and at
+   * most once per {@link TREE_PROBE_TTL_MS}.
+   *
+   * Both bounds are about cost. The probe is a container round-trip, and
+   * {@link advisories} is now read before **every** tool call rather than before
+   * the dependency-shaped ones — so an unconditional probe would put an exec on
+   * the path of every `cat`. It only ever qualifies a `deps-broken` advisory
+   * (see `deriveAdvisories`), so outside that state there is nothing to learn,
+   * and within it the answer changes about as often as an install finishes.
+   *
+   * Memoised in memory rather than in storage: a stale `false` costs one
+   * sentence of nuance in an advisory that is being reported either way, which
+   * is not worth a durable write on this path.
+   */
+  async #treePresentIfItMatters(install: InstallState): Promise<boolean> {
+    if (install.state !== "failed") return false;
+    const dir = (await this.#install.context())?.dir;
+    if (!dir) return false;
+
+    const now = Date.now();
+    const cached = this.#treeProbe;
+    if (cached && cached.dir === dir && now - cached.at < TREE_PROBE_TTL_MS) {
+      return cached.present;
+    }
+
+    const present = await this.#dependenciesPresent(dir);
+    this.#treeProbe = { at: now, dir, present };
+    return present;
+  }
+
+  /** Last {@link #treePresentIfItMatters} answer, for this isolate only. */
+  #treeProbe?: { at: number; dir: string; present: boolean };
 
   /**
    * The install record itself, with its staleness bound and re-attach applied.
    *
-   * Split from {@link installStatus} so `startInstall` can consult the record
-   * without re-entering the dependency probe above — which calls `startInstall`,
-   * and would otherwise recurse without end.
+   * Split from {@link advisories} so `startInstall` can consult the record
+   * without going through the `node_modules` probe, which needs a container and
+   * has nothing to say about whether an install may start.
    *
    * Re-attaches on the way past. An isolate reset leaves the record saying
    * `running` with nothing draining it, and without this the state would say

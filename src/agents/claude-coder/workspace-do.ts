@@ -23,6 +23,14 @@ import { claudeCodeConfig, CREDENTIALS_KEY } from "./claude-code";
  *    container is intercepted and handed to a `Fetcher` on this side of the
  *    boundary. That `Fetcher` swaps a real credential in.
  * 2. The credential pool's state, in this object's own storage.
+ *
+ * **The Dockerfile's entrypoint is the other half of (1), and it is not
+ * optional.** Interception terminates the container's HTTPS under an ephemeral
+ * CA, so an image that does not trust it has no working HTTPS client at all —
+ * `npm ci` fails with SELF_SIGNED_CERT_IN_CHAIN and the session reports
+ * "Self-signed certificate detected", neither of which mentions egress. The
+ * trust is installed in `Dockerfile`'s entrypoint, which carries the full
+ * reasoning; changing this mode means reading it.
  */
 export class ClaudeCoderWorkspaceDO extends WorkspaceObjectBase {
   /**

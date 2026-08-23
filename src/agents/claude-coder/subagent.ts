@@ -17,7 +17,7 @@ import {
   type DrainOutcome,
   type SessionRuntime
 } from "@loopingai/plugins/claude-code";
-import { truncateOutput } from "@loopingai/plugins/computer";
+import { sessionAdvisory, truncateOutput } from "@loopingai/plugins/computer";
 import { CLAUDE_CODE_SESSION, CLAUDE_CODER_CONFIG } from "@/config";
 import { claudeCodeConfig } from "./claude-code";
 import { subagentPlugins } from "./plugins";
@@ -82,6 +82,37 @@ export async function settleDrain(
       "the working-tree reset may race its final filesystem sync"
   );
   return false;
+}
+
+/**
+ * What the session is asked to do.
+ *
+ * The subtask's own prompt, plus the verbatim history the delegating model
+ * selected, plus whatever the workspace has to say for itself. A Claude Code
+ * session has no view of the parent's conversation and cannot ask, so anything
+ * that matters has to be inline — which is the same contract every subagent in
+ * this repo works under, said to a different process. The workspace note is
+ * inline for the same reason: the session cannot query the host, and a broken
+ * install or a workspace that has stopped accepting writes is the difference
+ * between a failure worth retrying and one that never will be.
+ */
+export function sessionBrief(
+  request: RecipeExecutionRequest,
+  note?: string
+): string {
+  const parts = [request.prompt];
+  if (note) {
+    parts.push("", "## The state of this workspace", "", note);
+  }
+  if (request.references.length > 0) {
+    parts.push(
+      "",
+      "## Context from the conversation that produced this task",
+      "",
+      ...request.references.map((ref) => `**${ref.role}:** ${ref.text}`)
+    );
+  }
+  return parts.join("\n");
 }
 
 export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
@@ -201,6 +232,29 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
       );
     }
 
+    /**
+     * What is true about the workspace, folded into the brief.
+     *
+     * The session starts whatever the workspace's state, and its own report is
+     * the only channel out — a subtask carries what the session said and nothing
+     * else. So a fact the session is not given is a fact the parent and the
+     * operator never see either, which is why this belongs in the brief rather
+     * than somewhere the session could look it up. It cannot: it has no tool
+     * that reaches the host.
+     *
+     * **Reported, never enforced.** Nothing here refuses to start the session.
+     * Blocking on a broken install deadlocks — nothing clears that record except
+     * another checkout — and returning `{ done: false }` to wait out one in
+     * flight would spend the branch's whole chunk allowance, since such a chunk
+     * returns in milliseconds. A Claude Code session can run `npm ci` itself, so
+     * the useful thing is to hand it the facts.
+     *
+     * The wording is the plugin's, deliberately: severity belongs with the
+     * definition of each advisory rather than being re-derived here from an
+     * error string. First chunk only — a resumed session was told this already.
+     */
+    const note = cursor ? undefined : sessionAdvisory(await stub.advisories());
+
     // `using`, so the client is released even when the drain throws. The handle
     // it hands back is rebuilt on this side of the boundary from the stub's byte
     // stream, so it is a real `ReadableStream` of runtime events — which is what
@@ -227,7 +281,7 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
         : await this.#session.start(
             runner,
             request.subtaskId,
-            this.#brief(request),
+            sessionBrief(request, note),
             dir as string
           );
     } finally {
@@ -315,26 +369,6 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
       });
       return await super.abortRun();
     }
-  }
-
-  /**
-   * What the session is asked to do.
-   *
-   * The subtask's own prompt, plus the verbatim history the delegating model
-   * selected. A Claude Code session has no view of the parent's conversation and
-   * cannot ask, so anything that matters has to be inline — which is the same
-   * contract every subagent in this repo works under, said to a different
-   * process.
-   */
-  #brief(request: RecipeExecutionRequest): string {
-    if (request.references.length === 0) return request.prompt;
-    return [
-      request.prompt,
-      "",
-      "## Context from the conversation that produced this task",
-      "",
-      ...request.references.map((ref) => `**${ref.role}:** ${ref.text}`)
-    ].join("\n");
   }
 
   /**

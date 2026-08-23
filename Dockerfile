@@ -11,8 +11,10 @@
 # wrangler.jsonc, always for linux/amd64: wrangler passes `--platform` itself and
 # rejects any other value, so never set one here.
 #
-# The ENTRYPOINT is `computerd`, the workspace daemon from
-# `@cloudflare/computer`. It mounts the Durable Object's SQLite-backed VFS at
+# The ENTRYPOINT installs the container's runtime TLS trust when there is any to
+# install, then execs `computerd`, the workspace daemon from
+# `@cloudflare/computer` — the block at the end of this file holds both halves
+# and the reasoning. `computerd` mounts the Durable Object's SQLite-backed VFS at
 # MOUNT_POINT over FUSE, so every command below sees the same tree the Worker
 # reads and writes — and that tree survives the container, which is the whole
 # reason this image replaced the `@cloudflare/sandbox` one.
@@ -164,6 +166,7 @@ RUN node -e "const m=Number(process.versions.node.split('.')[0]); if (m < 24) { 
   && npm --version \
   && git --version \
   && rg --version | head -n1 \
+  && command -v update-ca-certificates \
   && test -x /usr/local/bin/computerd
 
 # Everything below exists because tool output lands in a model's context window.
@@ -219,4 +222,76 @@ EXPOSE 8080
 # No WORKDIR, deliberately: computerd mounts the workspace at MOUNT_POINT after
 # it starts, so a build-time WORKDIR /workspace would bake an empty directory
 # that the mount then covers. Every exec passes an explicit cwd.
-ENTRYPOINT ["/usr/local/bin/computerd"]
+#
+# --- the entrypoint, and why it is not `computerd` directly ------------------
+#
+# `egress: { mode: "http-gateway" }` — which `ClaudeCoderWorkspaceDO` uses and
+# the plain `coder` does not — routes this container's HTTP and HTTPS through a
+# Worker `Fetcher`, and the HTTPS half is **terminated and re-originated** by
+# Cloudflare's runtime rather than tunnelled. It presents a certificate from an
+# ephemeral CA it mounts at the path below. That certificate exists only while
+# the container runs, so it cannot be baked into this image: it has to be
+# installed into the trust store on the way in, before computerd starts anything
+# that might dial out.
+#
+# Without it nothing holding an HTTPS client works, and the two failures do not
+# look related: `npm ci` dies with SELF_SIGNED_CERT_IN_CHAIN, and `claude -p`
+# reports "Self-signed certificate detected. Check your proxy or corporate SSL
+# certificates". One cause, and neither message names egress.
+#
+# Scoped to HTTP deliberately, because the interception is: both hooks take a
+# `Fetcher`. A raw TLS connection — a database, SMTP — is not re-signed by this
+# CA and is not made to work by any of this. Under `http-gateway` the container
+# starts with `enableInternet: false`, so it has nowhere to go at all.
+#
+# **NODE_EXTRA_CA_CERTS is not belt-and-braces.** Node carries its own bundled
+# root store and ignores the system one, so `update-ca-certificates` alone
+# leaves anything running on Node — npm and Claude Code among them — failing in
+# exactly the same way. The trust-store update is what covers what does read the
+# system store: curl, git over https, pip.
+#
+# Conditional, so one image serves both agents and `wrangler dev` too: under
+# `direct` egress nothing is intercepted, the path does not exist, and this is a
+# no-op that says so.
+#
+# **No `|| true` on `update-ca-certificates`, and that is not an oversight.** It
+# would defeat the `set -e` two lines above it, and this is a required step
+# rather than a nicety: swallowing a failure leaves curl, git and pip unable to
+# reach anything over the intercepted path while the container comes up looking
+# healthy — which resurfaces as precisely the unattributable TLS error this
+# whole block exists to prevent. Anything that could make it fail has already
+# broken TLS, so starting anyway buys a container that cannot work and hides the
+# reason. stderr is left alone so that reason lands in the container's logs.
+#
+# One benign line comes with that, on every cold container: `rehash: warning:
+# skipping ca-certificates.crt, it does not contain exactly one certificate or
+# CRL`. It is Debian's `c_rehash` walking the hash directory, it appears only
+# because a certificate was added, and it means nothing. Documented rather than
+# filtered — a grep narrow enough to drop just that line is a grep wide enough
+# to drop the next real one, and the whole reason stderr survives here is that
+# the next real one gets read.
+#
+# Written with `printf` rather than COPYed because
+# .dockerignore is `*` — the build context for this file is deliberately empty —
+# and a heredoc RUN would need a BuildKit syntax directive this file does not
+# carry. `sh -n` fails the BUILD on a script this file mangles, rather than
+# round three on a container whose entrypoint will not start.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      'CA=/etc/cloudflare/certs/cloudflare-containers-ca.crt' \
+      'if [ -r "$CA" ]; then' \
+      '  install -m 644 "$CA" /usr/local/share/ca-certificates/cloudflare-containers-ca.crt' \
+      '  update-ca-certificates > /dev/null' \
+      '  NODE_EXTRA_CA_CERTS="$CA"; export NODE_EXTRA_CA_CERTS' \
+      '  REQUESTS_CA_BUNDLE="$CA"; export REQUESTS_CA_BUNDLE' \
+      '  echo "[entrypoint] trusted the Cloudflare containers CA"' \
+      'else' \
+      '  echo "[entrypoint] no containers CA at $CA - egress is not intercepted"' \
+      'fi' \
+      'exec /usr/local/bin/computerd "$@"' \
+    > /usr/local/bin/workspace-entrypoint.sh \
+  && chmod +x /usr/local/bin/workspace-entrypoint.sh \
+  && sh -n /usr/local/bin/workspace-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/workspace-entrypoint.sh"]
