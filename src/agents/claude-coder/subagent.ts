@@ -85,6 +85,48 @@ export async function settleDrain(
 }
 
 /**
+ * What a session cost, as one line under its report.
+ *
+ * Added here because `CLAUDE_CODE_RECIPE` sets `reportMetrics: false` and core
+ * adds none — it is not driving this run. What a session spent is worth knowing
+ * when the bucket is shared with a human at their desk.
+ *
+ * Module-level and exported for the reason {@link settleDrain} is: `#report` is
+ * private and reaching it means driving a whole chunk against a container the
+ * suite deliberately never starts, so the one part with a rule in it would go
+ * untested.
+ *
+ * **`denials` is the field worth arguing for.** A denied tool call is invisible
+ * in a session's own account of itself — the model narrates an alternative
+ * approach and carries on — so a run that was fenced in reads as a run that was
+ * being thoughtful. This deployment shipped a release where every session was
+ * refused every write, reported `completed`, and left `permission_denials`
+ * parsed by the stream reader and read by nobody. The count was in the result
+ * line the whole time.
+ *
+ * Shown only when non-zero, and a non-zero count is not a failure: a deny rule
+ * firing on one command is a rule doing its job. It means the report should not
+ * be read at face value, which is what a footer is for.
+ */
+export function sessionFooter(result: {
+  numTurns?: number;
+  durationMs?: number;
+  costUsd: number;
+  usage: { cacheRead: number };
+  permissionDenials: number;
+}): string {
+  return [
+    `turns: ${result.numTurns ?? "?"}`,
+    `duration: ${Math.round((result.durationMs ?? 0) / 1000)}s`,
+    `cost: $${result.costUsd.toFixed(4)}`,
+    `cache reads: ${result.usage.cacheRead}`,
+    ...(result.permissionDenials > 0
+      ? [`denials: ${result.permissionDenials}`]
+      : [])
+  ].join(" · ");
+}
+
+/**
  * What the session is asked to do.
  *
  * The subtask's own prompt, plus the verbatim history the delegating model
@@ -380,9 +422,8 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * arrived because the process died first. Both are handled below rather than
    * left to produce a misleading row.
    *
-   * The metrics footer is added here because `CLAUDE_CODE_RECIPE` sets
-   * `reportMetrics: false` and core adds none — it is not driving this run. What
-   * a session cost is worth knowing when a bucket is shared with a human.
+   * The footer under both is {@link sessionFooter}, which carries its own
+   * reasoning — including why a denial count belongs beside the cost.
    */
   #report(
     outcome: Extract<DrainOutcome, { done: true }>
@@ -393,22 +434,28 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
     const modelId = CLAUDE_CODE_SESSION.model;
 
     if (!result) {
+      /**
+       * The one path with no account of itself, so stderr is all there is.
+       *
+       * A process that dies before its first JSON line leaves the stream empty
+       * — a rejected flag, a permission mode the CLI refuses under root, a Node
+       * crash. Reported as an exit code alone, every one of those reads the
+       * same, and the operator's next move is to guess. The drain keeps a
+       * bounded slice for exactly this sentence.
+       */
+      const said = outcome.stderr?.trim();
       return {
         status: "failed",
         error:
           `the Claude Code session exited with code ${outcome.exitCode} ` +
           "without reporting a result. Its output was lost with the process — " +
-          "the working tree may still hold partial edits.",
+          "the working tree may still hold partial edits." +
+          (said ? `\n\nIt printed:\n\n\`\`\`\n${said}\n\`\`\`` : ""),
         modelId
       };
     }
 
-    const footer = [
-      `turns: ${result.numTurns ?? "?"}`,
-      `duration: ${Math.round((result.durationMs ?? 0) / 1000)}s`,
-      `cost: $${result.costUsd.toFixed(4)}`,
-      `cache reads: ${result.usage.cacheRead}`
-    ].join(" · ");
+    const footer = sessionFooter(result);
 
     if (result.isError) {
       // Bounded on this path too. A failing session is the *more* likely one to

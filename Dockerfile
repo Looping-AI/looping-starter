@@ -199,9 +199,23 @@ RUN node -e "const m=Number(process.versions.node.split('.')[0]); if (m < 24) { 
 # covers anything else that ever runs `claude` in here — a debugging shell, a
 # repo script — and an autoupdate is exactly the event the pin above exists to
 # prevent. Harmless in the image without the CLI.
+#
+# IS_SANDBOX=1 is here for the same reason, and it is load-bearing for the same
+# clients. **This container runs as root**, and the CLI refuses to bypass its
+# permission checks under uid 0 without it — `process.exit(1)` before the first
+# JSON line, with the only explanation on stderr. The plugin sets it alongside
+# `--permission-mode bypassPermissions` so the two cannot drift; this copy is
+# what makes a hand-run `claude` in a debugging shell behave the same way as the
+# sessions do, which is the whole point of debugging in here.
+#
+# It says what it means: a container with no persistent identity, holding no
+# credential, running a cloned repository's `postinstall` by design. If this
+# image is ever changed to exec as a non-root user, delete this line — the guard
+# it clears will no longer be firing.
 ENV CI=1 \
     HUSKY=0 \
     DISABLE_AUTOUPDATER=1 \
+    IS_SANDBOX=1 \
     NO_COLOR=1 \
     FORCE_COLOR=0 \
     NPM_CONFIG_FUND=false \
