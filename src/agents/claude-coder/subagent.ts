@@ -91,16 +91,16 @@ const INSTALL_TAIL_MAX = 2_000;
  * What the host's dependency install has to say for itself, addressed to a
  * Claude Code session.
  *
- * Not `installGate` from `@loopingai/plugins/computer`, and not because that
- * helper is unavailable on the pinned version. Its wording is written for the
- * other reader — "The command below still ran", "call again in a moment" —
- * which describes an `sb_exec` gate refusing one tool call. There is no command
- * below here; there is a whole session about to start, and it can run `npm ci`
- * itself. Same facts, said to somebody who can act on them differently.
+ * Deliberately not `installGate` from `@loopingai/plugins/computer`, which
+ * answers the same question for a different reader: its wording — "The command
+ * below still ran", "call again in a moment" — describes an `sb_exec` gate
+ * refusing one tool call. There is no command below here; there is a whole
+ * session about to start, and it can run `npm ci` itself. Same facts, said to
+ * somebody whose available actions differ.
  *
- * `undefined` for every other state, `idle` and `done` included: a session told
- * that its dependencies are fine has been told nothing, at the cost of prefix
- * tokens on every run.
+ * `undefined` for `idle` and `done`: a session told that its dependencies are
+ * fine has been told nothing, at the cost of prefix tokens on every run. Every
+ * state that means "the tree is not what you would assume" returns words.
  */
 export function installNote(status: InstallState): string | undefined {
   if (status.state === "running") {
@@ -110,6 +110,24 @@ export function installNote(status: InstallState): string | undefined {
       `started ${secs}s ago). Anything importing from \`node_modules\` may fail ` +
       "until it finishes. Wait and retry rather than starting a second install " +
       "on top of the one already running."
+    );
+  }
+
+  /**
+   * Both writers of `skipped` carry a reason, and they are not the same news:
+   * one is a checkout with nothing to install, the other is a workspace at its
+   * storage ceiling, which accepts no further writes at all. Rendering the
+   * reason covers both without this having to classify them — and the ceiling
+   * is precisely the state a session must not discover by having its edits
+   * silently fail to persist.
+   */
+  if (status.state === "skipped") {
+    return (
+      `The host installed no dependencies: ${status.reason}\n\nThat is ` +
+      "sometimes routine — a checkout with nothing to install — and sometimes a " +
+      "wall: a workspace at its storage ceiling accepts no further writes, so " +
+      "edits made here will not survive. Read the reason before deciding which. " +
+      "If it is the second, report it and stop; nothing you do will persist."
     );
   }
 
@@ -253,11 +271,11 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
     /**
      * What the host's own dependency install is doing, folded into the brief.
      *
-     * The session starts whether or not `node_modules` is there, and until this
-     * existed it started **blind**: a `npm ci` failing on every attempt and a
-     * session failing on its first tool call arrived at the parent as one
-     * opaque `status: "failed"`, and the parent re-delegated the same task
-     * twelve times over nine minutes without ever being told why.
+     * The session starts whether or not `node_modules` is there, and its own
+     * report is the only channel out — a subtask carries what the session said
+     * and nothing else. So a fact the session is not given is a fact the parent
+     * and the operator never see either, and the install's state has to be part
+     * of the brief rather than something the session could go and look up.
      *
      * **Reported, never enforced**, and that is the hard-won part rather than a
      * shortcut — see `installGate`'s docblock in `@loopingai/plugins/computer`.

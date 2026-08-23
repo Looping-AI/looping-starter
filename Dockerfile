@@ -11,8 +11,10 @@
 # wrangler.jsonc, always for linux/amd64: wrangler passes `--platform` itself and
 # rejects any other value, so never set one here.
 #
-# The ENTRYPOINT is `computerd`, the workspace daemon from
-# `@cloudflare/computer`. It mounts the Durable Object's SQLite-backed VFS at
+# The ENTRYPOINT installs the container's runtime TLS trust when there is any to
+# install, then execs `computerd`, the workspace daemon from
+# `@cloudflare/computer` — the block at the end of this file holds both halves
+# and the reasoning. `computerd` mounts the Durable Object's SQLite-backed VFS at
 # MOUNT_POINT over FUSE, so every command below sees the same tree the Worker
 # reads and writes — and that tree survives the container, which is the whole
 # reason this image replaced the `@cloudflare/sandbox` one.

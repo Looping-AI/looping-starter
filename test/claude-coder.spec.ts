@@ -332,11 +332,11 @@ describe("waiting for an interrupted session to unwind", () => {
 /**
  * What a session is told about the tree it is about to work in.
  *
- * The case that earned this: `claude -p` starts whether or not `node_modules`
- * is there, so a container whose `npm ci` could not reach the registry produced
- * a session failing on its first tool call and an install failing in parallel,
- * and the two arrived at the parent as one wordless `failed`. The note is the
- * only place either fact is said out loud to somebody who can act on it.
+ * The contract: every install state meaning "the tree is not what you would
+ * assume" reaches the session in words, and every state meaning "it is fine"
+ * reaches it as silence. A session cannot query the host, and its own report is
+ * the only channel back to the parent — so a state that produces neither is
+ * invisible to everybody.
  */
 describe("what the session is told about the install", () => {
   it("hands a failed install's own output to the session", () => {
@@ -365,6 +365,28 @@ describe("what the session is told about the install", () => {
 
     expect(note).toContain("still installing");
     expect(note).toContain("npm ci");
+  });
+
+  /**
+   * A `skipped` install has two writers and only one is routine. The storage
+   * ceiling is the other, and a session that is not told about it makes edits
+   * that never persist — a failure with no error anywhere to attribute it to.
+   */
+  it("renders why an install was skipped, ceiling included", () => {
+    const routine = installNote({
+      state: "skipped",
+      reason: "no package.json in this checkout"
+    });
+    expect(routine).toContain("no package.json in this checkout");
+
+    const ceiling = installNote({
+      state: "skipped",
+      reason:
+        "this workspace holds 10.4 GB, against a 10 GB per-object limit. " +
+        "Nothing further will be written to it"
+    });
+    expect(ceiling).toContain("10 GB per-object limit");
+    expect(ceiling).toContain("nothing you do will persist");
   });
 
   /**
