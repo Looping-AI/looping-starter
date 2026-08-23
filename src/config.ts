@@ -151,11 +151,9 @@ export const CODER_CONFIG: CoreConfigOverrides = {
  * Every other delegating agent in this repo fans out. This one must not, and the
  * reason is the shared checkout: two Claude Code sessions in one container are
  * two autonomous agents editing one working tree, each running the project's
- * test suite over the other's half-finished edits. The coder already warns its
- * model about this for `code` subtasks — "subagents share one checkout, so two
- * of them editing the same files conflict rather than parallelise" — and there
- * the subagents are short and closely briefed. Here they are long and
- * unsupervised, so the guidance becomes a limit.
+ * test suite over the other's half-finished edits. The coder only *advises* its
+ * model against this because its subagents are short and closely briefed; here
+ * they are long and unsupervised, so the advice becomes a limit.
  *
  * Raise it only alongside a story for how two sessions avoid each other.
  */
@@ -172,28 +170,23 @@ export const CLAUDE_CODER_CONFIG: CoreConfigOverrides = {
  * they are metered by the resumable runner, and this agent's `executeChunk`
  * bypasses it entirely to drive the CLI instead. A limit written there is inert.
  *
- * Nor is there a spend cap, deliberately: an estimate in dollars is a guess
+ * Nor is there a spend cap, deliberately — an estimate in dollars is a guess
  * about a subscription bucket nobody can read, and the gateway reads the bucket
- * directly — it rotates to the next credential when Anthropic says the current
- * one is spent. That handles the 5-hour and weekly limits; it is not a
- * per-session bound and is not meant as one.
+ * directly, rotating credentials when Anthropic says one is spent. That bounds
+ * the deployment, not a session.
  *
- * So `timeoutMs` is the ceiling, and it is enforced by the container runtime.
+ * So `timeoutMs` is the ceiling, and the container runtime enforces it.
  */
 export const CLAUDE_CODE_SESSION = {
   /**
-   * Opus 5, deliberately, because it is the reason this agent exists.
+   * Opus 5, deliberately: reaching it on a subscription credential is the whole
+   * reason this agent exists, so spending the bucket on something cheaper would
+   * be paying the setup cost and declining the return.
    *
-   * A subscription credential 429s at zero tokens against the raw Messages API
-   * on every frontier model; the same credential answers through the sanctioned
-   * client. Reaching Opus is the whole payoff, so spending the bucket on
-   * something cheaper would be paying the setup cost and declining the return.
-   *
-   * The cost is real and worth stating: a 5-hour bucket is roughly $10 of
+   * The cost is worth stating. A 5-hour bucket is roughly $10 of
    * Opus-equivalent and a substantial coding subtask is plausibly $1-5, so
-   * expect two to four of them per bucket per credential. `claude-sonnet-5`
-   * stretches that several times further if a deployment would rather have
-   * volume.
+   * expect two to four per bucket per credential. `claude-sonnet-5` stretches
+   * that several times further if a deployment would rather have volume.
    */
   model: "claude-opus-5",
 

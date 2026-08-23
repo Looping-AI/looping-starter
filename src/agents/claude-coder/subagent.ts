@@ -259,56 +259,34 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * Stop the session this instance is holding, so a cancellation lands on the
    * running process rather than at the next chunk boundary.
    *
-   * `SIGTERM`, which Claude Code handles properly: it aborts the turn, kills its
-   * own Bash process tree, runs `SessionEnd` hooks and exits 143. `SIGKILL`
-   * would leave whatever the session had spawned still running in a container
-   * that outlives the task.
+   * `SIGTERM` rather than `SIGKILL`, and it is chosen for what Claude Code does
+   * *after* it: aborts the turn, kills its own Bash process tree, runs
+   * `SessionEnd` hooks, exits 143. `SIGKILL` would leave whatever the session
+   * spawned still running in a container that outlives the task.
    *
    * Best-effort, and it must be: a cancellation has to complete whether or not
    * the container is reachable.
    *
-   * ## The return value is a claim about who resolves the row, not a status
-   *
-   * Core reads it that way ([`round/agent.js`](../../../node_modules/@loopingai/core/dist/round/agent.js)):
+   * **The return value is a claim about who resolves the row, not a status.**
    * `true` means "there was live work and it has been interrupted, so the chunk
-   * path will come back and resolve this subtask"; `false` means "there is no
-   * live promise — the isolate was evicted or crashed, so nobody is coming
-   * back", and core then transitions the row itself and **deletes this facet**.
+   * path will come back and resolve this subtask"; `false` means "no live
+   * promise — nobody is coming back", on which core transitions the row itself
+   * and **deletes this facet**. So `super.abortRun()` is the wrong answer to
+   * return: it tracks an in-flight *model call*, set inside the `executeChunk`
+   * this class overrides outright, so it always answers `false` here — tearing
+   * the facet down while `executeChunk` is still unwinding its drain. A stopped
+   * session does come back, so it is reported as `true`. The base's answer is
+   * still right where this override does not reach: no session held, or a `stop`
+   * that could not be delivered.
    *
-   * So `super.abortRun()` is the wrong answer to return here. The base tracks an
-   * in-flight *model call*, set inside the `executeChunk` this class overrides
-   * outright — for a `claude-code` subtask it is never set, so the base always
-   * answers `false`. Returning it would tell core to tear the facet down while
-   * `executeChunk` is still unwinding its drain and about to write its cursor.
-   *
-   * A stopped session does come back: `SIGTERM` ends the process, the drain
-   * reaches `done`, and the chunk returns a terminal result. That is exactly the
-   * `true` case, so it is reported as one.
-   *
-   * The base's answer is still right in the two cases this override does not
-   * cover — no session held here, or a `stop` that could not be delivered — so
-   * those defer to it rather than overclaiming.
-   *
-   * ## Why it then waits for the drain
-   *
-   * `stop` delivers a signal; it does not wait for the process to go. `killRun`
-   * is `killExec(id, { signal: "SIGTERM" })`, and SIGTERM is chosen precisely
-   * *because* Claude Code does more work after it — aborts the turn, kills its
-   * Bash process tree, runs its `SessionEnd` hooks, then exits 143.
-   *
-   * That matters because of what the parent does next. `onTaskCanceled` awaits
-   * this method and then runs `git reset --hard && git clean -fdx` in the same
-   * container. Returning as soon as the signal was delivered would let that
-   * reset run *while the session is still writing* — and worse, the
-   * container-to-workspace sync is driven by the drain reaching `done`
-   * (`withPostPull`), so files the session wrote after the reset would be synced
-   * into the durable checkout afterwards. The cleanup whose entire purpose is to
-   * guarantee a clean tree would leave an arbitrary half-reset one.
-   *
-   * So this waits for the drain to unwind, which is the point at which the
-   * process is gone and its post-pull sync has already completed. Bounded,
-   * because a cancellation has to finish: a drain that will not settle is
-   * logged and left, which is no worse than the race it replaces.
+   * **It waits for the drain, not just for the signal.** `onTaskCanceled` awaits
+   * this and then runs `git reset --hard && git clean -fdx` in the same
+   * container. Returning at delivery would let that reset run while the session
+   * is still writing — and the container-to-workspace sync is driven by the
+   * drain reaching `done` (`withPostPull`), so files written after the reset
+   * would be synced into the durable checkout behind it. The cleanup whose whole
+   * purpose is a clean tree would leave an arbitrary half-reset one. Bounded: a
+   * drain that will not settle is logged and left.
    */
   override async abortRun(): Promise<boolean> {
     const inflight = this.#inflight;

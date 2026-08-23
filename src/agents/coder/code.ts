@@ -37,33 +37,23 @@ export const CODE_SUBAGENT_SOUL = [
   "The repository checkout already exists — do not clone it again. Work in the directory your task names. The checkout is durable and may hold work from an earlier task; `node_modules` is not, and is reinstalled whenever the container restarts.",
   "The file tools cannot read inside `node_modules` — it lives in the container rather than in the durable workspace. Use `sb_exec` (`cat`, `grep`) when you need to read a dependency's source. Nothing is missing when this happens.",
 
-  // The verification rule. Two failures shaped it, in opposite directions, and it
-  // has to hold both off at once.
+  // The verification rule, held between two failures that pull opposite ways.
   //
-  // The first: the parent's soul once asked for "the project's own tests and
-  // linters", which is a *standard*, not a step — and a standard with no command
-  // attached is one a model satisfies by running whichever check is cheapest. A
-  // run edited a README, ran `prettier --check` on that one file, and reported the
-  // change verified. Nothing was installed and the project's own gate never ran.
+  // Too loose and a standard with no command attached is satisfied by whichever
+  // check is cheapest: a run edited a README, ran `prettier --check` on that one
+  // file, and reported the change verified while the project's gate never ran.
   //
-  // The fix for that was to mandate `npm run check` *and* `npm test` on every
-  // subtask, and it overcorrected badly. A one-line README edit took 59 minutes:
-  // `npm run check` here is five sequential tools including two full `tsc` runs,
-  // `npm test` boots workerd through vitest-pool-workers, and the subagent ran
-  // both — twice, once per subtask — on half a vCPU. The model was idle for
-  // roughly 85% of the wall clock, blocked in a single `sb_exec`.
+  // Too tight and it costs more than it catches. Mandating `npm run check` *and*
+  // `npm test` on every subtask turned a one-line README edit into 59 minutes —
+  // `check` here is five sequential tools including two full `tsc` runs, `npm
+  // test` boots workerd, and the subagent ran both twice on half a vCPU, idle for
+  // ~85% of the wall clock inside a single `sb_exec`.
   //
-  // So `npm test` is no longer automatic: the default is the project's check plus
-  // the specs covering the files touched, and the full suite is for a change whose
-  // blast radius the diff does not show. CI is the backstop for the rest.
-  //
-  // There is deliberately **no cheaper branch for docs-only changes**, and that is
-  // a considered omission rather than one nobody thought of. It was written once
-  // and removed: almost no real task is only a README, so it bought a rare case
-  // while adding a judgement call ("is this really docs-only?") to every common
-  // one — and a wrong answer there lands straight back on the first failure above.
-  // The branches below are conditions, not preferences, and there are two of them
-  // for that reason.
+  // Hence two branches below, decided by blast radius rather than preference,
+  // with CI as the backstop. There is deliberately **no third branch for
+  // docs-only changes**: almost no real task is only a README, so it would buy a
+  // rare case while adding a judgement call to every common one — and a wrong
+  // answer there lands straight back on the first failure.
   "Dependencies are installed for you — the host starts the install when the repository is checked out, picking the command from the lockfile. You do not need to run it. If a command tells you the install is still running, nothing was run: wait a moment and call it again. If a command is prefixed with a warning that the install failed, that command did run and its output is real, but `node_modules` is missing — re-run the install command named in the warning yourself before you trust any result that depends on it.",
 
   "Before you report done, verify your change at a scope that matches it. Which branch applies is decided by the files you edited, not by how confident you feel:",

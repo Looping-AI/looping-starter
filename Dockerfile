@@ -131,11 +131,10 @@ RUN if command -v corepack > /dev/null; then \
 # entry passes nothing and this is a no-op; the `claude-coder` entry passes a
 # version.
 #
-# The design plan called for a second Dockerfile instead. A build arg is better:
-# the 140 lines above encode things that were expensive to learn — why the base
-# is trixie and not bookworm, why `xxd` rather than `vim-common`, why Node 24 —
-# and a copied file would drift silently, in whichever direction the image
-# nobody redeployed recently happened to go.
+# A build arg rather than a second Dockerfile, because everything above encodes
+# things that were expensive to learn — why the base is trixie and not bookworm,
+# why `xxd` rather than `vim-common`, why Node 24 — and a copied file would drift
+# silently, in whichever direction the image nobody redeployed recently went.
 #
 # **The pin is load-bearing, not tidiness.** The egress gateway rewrites this
 # client's requests and `events.ts` parses its stream, and both are written

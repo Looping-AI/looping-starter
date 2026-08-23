@@ -24,36 +24,26 @@ export type WorkspaceNamespace = DurableObjectNamespace<WorkspaceObjectBase>;
  * Discard a cancelled task's half-finished edits — without discarding the
  * workspace.
  *
- * The guarantee: a cancelled task's working tree is an edit nobody asked for,
- * and the checkout outlives the task, so leaving it would hand the *next* task
- * someone's abandoned work as if it were the starting point.
+ * The guarantee: the checkout outlives the task, so edits nobody asked for would
+ * otherwise be handed to the *next* task as its starting point.
  *
- * **Throwing the container away does not achieve this**, and it used to. The
- * container *was* the state; now the checkout lives in a Durable Object and
- * survives the container entirely, so `destroy()` would discard `node_modules` —
- * the one thing that is genuinely expensive to rebuild — while leaving the
- * abandoned edits exactly where they were. Exactly backwards.
+ * **Not by throwing the container away.** The checkout lives in a Durable Object
+ * and survives the container, so `destroy()` would discard `node_modules` — the
+ * one genuinely expensive thing — and leave the abandoned edits exactly where
+ * they were. Exactly backwards. The reset happens in the checkout instead.
  *
- * So the reset happens in the checkout. `-e node_modules` keeps the install,
- * which no cancellation has any reason to invalidate.
+ * **`-x` is the load-bearing flag, and `-e node_modules` is what makes it safe.**
+ * Without `-x`, `git clean -fd` leaves ignored files in place: a half-built
+ * `dist/`, a generated client, a scratch config written by the abandoned run all
+ * survive into the next task while `git status` reports the tree as clean. That
+ * is the very case this exists to prevent, arriving through the one door
+ * `git status` does not show. `-x` closes it, and naming `node_modules` keeps
+ * the single artefact that is expensive rather than merely regenerable.
  *
- * ## `-x`, and why the exclusion is the whole design
- *
- * `git clean -fd` without `-x` leaves **ignored** files exactly where they are,
- * which quietly defeats the guarantee above: a half-built `dist/`, a generated
- * client, a coverage report or a scratch config written by the abandoned run all
- * survive into the next task, and `git status` reports the tree as clean while
- * they do. That is the abandoned-work-as-starting-point case this function
- * exists to prevent, arriving through the one door `git status` does not show.
- *
- * `-x` closes it, and the `-e node_modules` exclusion is what makes `-x` safe to
- * use: the single genuinely expensive artefact is named and kept, and everything
- * else that gets removed is something a build regenerates. That trade is only
- * this clean because the workspace is a JavaScript one by construction —
- * `INSTALL_PLAN` resolves npm, pnpm or yarn and nothing else — so `node_modules`
- * really is the expensive set rather than one member of it. An install plan that
- * grows another ecosystem needs its directory added here in the same change,
- * or a cancellation starts throwing away a `.venv` or a Rust `target/`.
+ * That trade only works because the workspace is a JavaScript one by
+ * construction — `INSTALL_PLAN` resolves npm, pnpm or yarn and nothing else. An
+ * install plan that grows another ecosystem must add its directory here in the
+ * same change, or a cancellation starts deleting a `.venv` or a Rust `target/`.
  *
  * Best-effort and deliberately not fatal: `git clean` on a checkout that does
  * not exist yet is a no-op, and a cancellation must complete either way.

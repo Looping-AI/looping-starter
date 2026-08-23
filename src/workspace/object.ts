@@ -44,12 +44,11 @@ import type { RepoGitResult } from "@loopingai/plugins/repo";
  * A workspace: one Durable Object, one container, one repository.
  *
  * **Shared by every agent in this Worker that has a container**, which today is
- * `coder` and `claude-coder`. Each subclasses {@link WorkspaceObjectBase} and
- * supplies three values — its wrangler binding name, its egress policy and a log
- * label — and inherits everything else. The two objects were byte-identical
- * apart from those three, and the second was going to be a copy of ~1500 lines
- * whose comments record failures that cost production time to find; a copy of
- * that drifts in whichever direction the object nobody redeployed recently went.
+ * `coder` and `claude-coder`. Each subclasses {@link WorkspaceObjectBase},
+ * supplies a {@link WorkspaceObjectConfig}, and inherits everything else. Keep
+ * that seam narrow: it is the complete answer to "what is different about this
+ * agent's container", and the alternative is a second copy of this file
+ * drifting in whichever direction the object nobody redeployed recently went.
  *
  * It lives in `src/workspace/` rather than in either agent's directory because
  * `verify:isolation` fails an agent that imports a sibling's module: the
@@ -75,6 +74,17 @@ import type { RepoGitResult } from "@loopingai/plugins/repo";
  * direct `runtime` access the detached install needs. So this object owns the
  * `Workspace` and implements the one method the mixin otherwise provides,
  * `__getWorkspaceStub`. Callers outside see no difference.
+ *
+ * ## The rule the install guards all serve
+ *
+ * `running` is the one install state that **blocks work**: `sb_exec` waits on it
+ * and then refuses to run. Every other state is a fact the subagent can act on.
+ * So a `running` record must never outlive the command it describes, and the
+ * ways it can are not all reachable from one place — the spawn can fail before a
+ * drain is attached, a drain can be cut short by an eviction, `getExec` can hand
+ * back a handle to a container that never answers, and two installs can displace
+ * each other. Each guard below names the one it closes; the staleness bound in
+ * `#installState` is the proof that covers the rest.
  */
 
 /** Where every checkout lives, inside the container and in the VFS. */
@@ -112,17 +122,13 @@ const INSTALL_KEY = "install";
 /**
  * How long after arming an install before arming another.
  *
- * Arming is self-limiting for a *successful* install — it writes `running`, and
- * a finished one leaves `done` with the container up, so the cheap
- * `container.running` check short-circuits every later call. A **failing** one
- * has no such property: it lands back on `failed`, the container is still down,
- * and the next `__getWorkspaceStub` would arm again. That is the busiest entry
- * point in the object, so "again" means on essentially every tool call.
- *
- * This is the bound. Five minutes is longer than a whole task and far longer
- * than an install (88s measured), so a genuinely broken container retries at
- * roughly the rate a human would, while a task starting twenty minutes later
- * still gets a fresh attempt without anyone clearing anything.
+ * The bound on a *failing* install. A successful one is self-limiting — it ends
+ * `done` with the container up, so `container.running` short-circuits every
+ * later call — but a failure lands back on `failed` with the container still
+ * down, and `__getWorkspaceStub` is the busiest entry point in the object, so
+ * it would re-arm on essentially every tool call. Five minutes is far longer
+ * than an install (88s measured), so a broken container retries at roughly the
+ * rate a human would and a later task still gets a fresh attempt.
  */
 const INSTALL_ARM_COOLDOWN_MS = 5 * 60_000;
 
@@ -131,11 +137,9 @@ const INSTALL_WATCH_MS = 60_000;
 
 /**
  * How far past its own timeout a `running` install is still given the benefit of
- * the doubt.
- *
- * Generous on purpose. Declaring a live install dead costs a duplicate `npm ci`;
- * the margin only has to be wider than the slack between the runtime killing a
- * command and this object hearing about it.
+ * the doubt. Generous on purpose: declaring a live install dead costs a
+ * duplicate `npm ci`, and the margin only has to cover the slack between the
+ * runtime killing a command and this object hearing about it.
  */
 const INSTALL_STALE_MS = 5 * 60_000;
 
@@ -162,11 +166,11 @@ const IDLE_RECLAIM = "idle-reclaim";
 /**
  * How long a workspace survives without being used.
  *
- * A Durable Object is **never** reclaimed by the platform: it exists as long as
- * its storage does, and a namespace cannot be enumerated from a Worker, so
- * nothing else is coming to clean up. Source-only workspaces are small — 6.3 MB
- * for looping-gateway — which makes this hygiene rather than cost control, but
- * unbounded hygiene is still unbounded.
+ * A Durable Object is **never** reclaimed by the platform, and a namespace
+ * cannot be enumerated from a Worker, so nothing else is coming to clean up.
+ * Source-only workspaces are small (6.3 MB for looping-gateway), which makes
+ * this hygiene rather than cost control — but unbounded hygiene is still
+ * unbounded.
  */
 const IDLE_RECLAIM_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -176,44 +180,32 @@ const CONTAINER_IDLE = "container-idle";
 /**
  * How long a container stays up after the last command **started**.
  *
- * No `sleepAfter` to lean on: `withWorkspaceContainer` wraps the runtime's raw
- * `ctx.container`, not `@cloudflare/containers`' `Container`, so idle shutdown is
- * ours to schedule.
+ * Ours to schedule: `withWorkspaceContainer` wraps the runtime's raw
+ * `ctx.container`, not `@cloudflare/containers`' `Container`, so there is no
+ * `sleepAfter` to lean on.
  *
- * **This must exceed the longest command the shell allows**, and breaking that
- * kills work in flight. The idle clock is armed by `#touch()` on the way *into*
- * this object; a command touches once and then nothing touches again until it
- * finishes, since `handle.result()` is one long await and the FUSE traffic under
- * it never surfaces as an RPC. So the window is measured from when a command
- * starts, not when it ends.
+ * **This must exceed the longest command the agent allows**, and breaking that
+ * kills work in flight. Measured from when a command *starts*: `#touch()` arms
+ * the clock on the way into this object, and a running command touches nothing
+ * again until it finishes — `handle.result()` is one long await and the FUSE
+ * traffic under it never surfaces as an RPC. Set equal to the computer plugin's
+ * `DEFAULT_TIMEOUT_MS`, the two timers race and whichever fires first destroys
+ * the container the other depends on. Twenty minutes is double that ceiling;
+ * raise it, never lower it, if `sb_exec` is given a longer timeout.
  *
- * At the previous ten minutes that window was **exactly** the computer plugin's
- * `DEFAULT_TIMEOUT_MS` — two timers of the same length started moments apart,
- * and whichever fired first destroyed the container the other depended on.
- * Reported as "repeated exec-backend crashes/restarts": `npm run check` (28 s
- * measured) always survived, a full `npm test` never did.
- *
- * Twenty minutes is double that ceiling. Raise it — never lower it — if
- * `sb_exec` is ever given a longer timeout.
- *
- * **The default, not the policy.** An agent whose longest command runs longer
- * than this must say so via {@link WorkspaceObjectConfig.containerIdleMs},
- * because the rule above is about the agent rather than about this base class:
- * `claude-coder` holds one `claude -p` session open for its whole 40-minute
- * timeout, and at twenty minutes the container would be stopped out from under a
- * live session. Chunk boundaries re-enter this object and `#touch()`, which
- * mostly hides that — but "mostly" is not the guarantee this constant is
- * documented to give, and a retried or delayed chunk is all it takes.
+ * **The default, not the policy.** "Longest command" is a fact about the agent,
+ * so one whose commands run longer must say so via
+ * {@link WorkspaceObjectConfig.containerIdleMs} — `claude-coder` holds a
+ * `claude -p` session open for its whole 40-minute timeout.
  */
 const CONTAINER_IDLE_MS = 20 * 60_000;
 
 /**
  * Refuse to grow past this, of the 10 GB a Durable Object may hold.
  *
- * Source-only workspaces run at ~6 MB, so this should never fire — which is
- * exactly why it is worth having. If something does start pulling a large tree
- * in, a sentence naming the number beats a write failing somewhere unrelated
- * with nothing to connect it to.
+ * Source-only workspaces run at ~6 MB, so this should never fire — which is why
+ * it is worth having: if something does start pulling a large tree in, a
+ * sentence naming the number beats a write failing somewhere unrelated.
  */
 const STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
 
@@ -395,20 +387,16 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * verdict rather than reporting progress between bounded windows.
    *
    * **The alarm runs the install, and that is not a detail.** An install takes
-   * ~85 seconds and must not be owned by the request that noticed it was needed:
-   * an earlier attempt handed one to `ctx.waitUntil` from a gate poll that
-   * returned in milliseconds, and the drain was disposed underneath it
-   * mid-`npm ci`. An alarm invocation belongs to the object rather than to any
-   * caller, so nothing it awaits can be cut short by a response being sent.
+   * ~85 seconds and must not be owned by the request that noticed it was needed
+   * — a drain handed to `ctx.waitUntil` from a gate poll that returns in
+   * milliseconds is disposed mid-`npm ci`. An alarm invocation belongs to the
+   * object rather than to any caller, so nothing it awaits can be cut short by a
+   * response being sent.
    *
-   * **Arming writes `running` before anything is running**, which is what holds
-   * the gate shut in the moments before the alarm fires. `#beginInstall` then
-   * refuses to start while a `running` record stands, and is right to — that
-   * guard is what stops two `npm ci` processes sharing one
-   * {@link INSTALL_EXEC_ID} and writing each other's verdicts. So the alarm
-   * presents the stamp arming wrote to `claim`, which recognises its own
-   * placeholder and nothing else; taking over any `running` record instead would
-   * reintroduce the displacement bug the guard exists to prevent.
+   * **Arming writes `running` before anything is running**, which holds the gate
+   * shut in the moments before the alarm fires. The alarm then presents the stamp
+   * arming wrote to `claim`, which recognises its own placeholder and nothing
+   * else — taking over any `running` record instead would be displacement again.
    */
   readonly #install = new JobLifecycle<{ command: string }, InstallContext>({
     id: INSTALL_KEY,
@@ -550,13 +538,13 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * the credential is read from *this* object's `env` and never crosses an RPC
    * boundary, never appears in an argument list, and never enters the container.
    *
-   * That last clause is the point. The previous arrangement ran credentialed
-   * `git` inside the container and built a disposable bare git dir per operation,
-   * because git executes whatever `.git/config` and `.git/hooks` name and the
-   * model has a root shell on that filesystem. It closed the durable form of the
-   * attack but not the window where the token sat in a container process's
-   * environment, readable through `/proc`. isomorphic-git runs here and has no
-   * hooks, no `ext::` transport, no template directory and no credential helpers.
+   * That last clause is the point, and it is why running credentialed `git` in
+   * the container is not an option however carefully it is sandboxed: git
+   * executes whatever `.git/config` and `.git/hooks` name, the model has a root
+   * shell on that filesystem, and even a disposable git dir leaves the token
+   * readable through `/proc` for the life of the process. isomorphic-git runs
+   * here and has no hooks, no `ext::` transport, no template directory and no
+   * credential helpers.
    *
    * Each takes `url` explicitly rather than a remote name: resolving `origin`
    * would read `.git/config`, a workspace file a co-installed shell tool can
@@ -737,20 +725,16 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * is not ambiguous — the tree that record describes is gone. The getter is
    * synchronous, so the warm path costs one boolean and touches no storage.
    *
-   * Armed here because `__getWorkspaceStub()` is reached before any command
-   * runs, which is the earliest honest moment in a task. The model spends its
-   * first minute reading the README and running `git status`, none of which
-   * needs dependencies — an install armed here runs *through* that minute, where
-   * one armed on the first `npm` command charges its full 85 seconds to that
-   * command.
+   * Armed from `__getWorkspaceStub()`, before any command runs, because the
+   * model's first minute is README-reading and `git status` — an install armed
+   * there runs *through* that minute, where one armed on the first `npm` command
+   * charges its full 85 seconds to that command.
    *
-   * It writes `running` before anything is running because the alarm has not
-   * fired yet, and a `done` record would let an `npm` command through against a
-   * tree that is not there. That also makes the method self-limiting: the next
-   * call sees `running` and stops, so the busiest entry point in the object arms
-   * at most once per cold container. The staleness bound in {@link #installState}
-   * covers an alarm that never fires; the watch intent covers one that dies
-   * part-way.
+   * It writes `running` before anything is running: the alarm has not fired yet,
+   * and a `done` record would let an `npm` command through against a tree that
+   * is not there. That also makes this self-limiting — the next call sees
+   * `running` and stops — so the busiest entry point in the object arms at most
+   * once per cold container.
    */
   async #armInstallIfCold(): Promise<void> {
     // Running container: whatever the record says about `node_modules`, it is
@@ -758,32 +742,22 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     if (this.ctx.container?.running) return;
 
     /**
-     * Narrowed to `done` **or** `failed` to read `state.command` — the command
-     * the placeholder has to carry, since the gate renders it while the alarm is
-     * still pending. Core's `isRearmable` is the authority on *which* states may
-     * re-arm and re-checks this inside {@link JobLifecycle.arm}; this is
-     * deliberately the same pair, for the reason recorded below.
+     * `done` **or** `failed`, matching core's `isRearmable`, and narrowed to the
+     * pair that carries a `state.command` — the placeholder needs one, since the
+     * gate renders it while the alarm is still pending.
      *
-     * Arming used to require `done` alone, on the reasoning that re-driving a
-     * failed install would loop. That reasoning belonged to an earlier design
-     * where the check ran on *every* gated command; this runs once per cold
-     * container and writes `running` immediately, so it cannot loop.
+     * **`failed` has to be in there.** Leaving it out means a workspace whose
+     * install failed once declines to arm ever again, and one bad install
+     * poisons every task after it. Re-driving a failure cannot loop here: this
+     * runs once per cold container and writes `running` immediately.
      *
-     * The cost of leaving `failed` out was immediate: a run whose install had
-     * failed left that record behind, the next task saw it, declined to arm, and
-     * was rescued only because the parent happened to call `repo_clone` that
-     * time. A workspace would otherwise never re-arm again — one bad install
-     * poisoning every task after it.
-     *
-     * `skipped` and `idle` stay excluded for good reasons rather than caution:
-     * `skipped` means the resolver looked and found nothing to install, so a
-     * missing tree is correct and permanent; `idle` means nothing has ever been
-     * installed, so there is no `install:context` naming where to do it — that
-     * is `repo_clone`'s job and it is handled below anyway.
+     * `skipped` and `idle` stay out for reasons rather than caution: `skipped`
+     * means the resolver found nothing to install, so a missing tree is correct
+     * and permanent; `idle` means nothing has ever been installed, so there is
+     * no `install:context` naming where to do it — that is `repo_clone`'s job.
      *
      * `#installState()` rather than the lifecycle's raw `read()`, so a `running`
-     * record left by a dead isolate is repaired to `failed` here and can arm,
-     * instead of standing until something else looks at it.
+     * record left by a dead isolate is repaired to `failed` here and can arm.
      */
     const state = await this.#installState();
     if (state.state !== "done" && state.state !== "failed") return;
@@ -993,28 +967,23 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     await this.#workspace.ready();
 
     /**
-     * One install at a time, and this guard is load-bearing.
+     * One install at a time — the hazard is displacement.
      *
-     * `repo_clone` calls this and a retried chunk calls it again — three times
-     * in fifty seconds, in the run that prompted this. Every call spawns with
-     * the same `INSTALL_EXEC_ID`, so each displaced the last, and the displaced
-     * command's drain was still attached through `ctx.waitUntil`. That drain
-     * then wrote *its* outcome over a record describing an install still running
-     * perfectly well, which came back from production as a "stale dependency
-     * install failed" no amount of waiting would clear.
+     * `repo_clone` calls this and a retried chunk calls it again. Every call
+     * spawns with the same {@link INSTALL_EXEC_ID}, so without this each would
+     * displace the last while the displaced command's drain stayed attached
+     * through `ctx.waitUntil` — then wrote *its* outcome over a record
+     * describing an install still running perfectly well.
      *
-     * `#installState()` rather than the lifecycle's raw `read()`, so this
-     * inherits the re-attach as well: a `running` record left by a dead isolate
-     * is resolved here rather than blocking a legitimate retry forever.
-     * {@link JobLifecycle.claim} applies the staleness bound again on the way
-     * past, which is deliberate belt-and-braces — the bound is the guarantee,
-     * and a caller that forgot to repair first would otherwise wedge the job.
+     * `#installState()` rather than the lifecycle's raw `read()`, so a `running`
+     * record left by a dead isolate is resolved here rather than blocking a
+     * legitimate retry forever.
      *
-     * `takeOverArmedAt` is the one exemption, narrow on purpose. The alarm's
+     * `takeOverArmedAt` is the one exemption, narrow on purpose: the alarm's
      * placeholder is a `running` record for an install that has not started, so
-     * the alarm must pass its own guard — and only its own. Matching the exact
+     * the alarm must pass its own guard and only its own. Matching the exact
      * `startedAt` it wrote is what stops that becoming "take over any running
-     * install", which is the displacement bug above in a new hat.
+     * install", which is displacement again in a new hat.
      */
     const current = await this.#installState();
     const claim = this.#install.claim(
@@ -1107,21 +1076,17 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     });
 
     /**
-     * The watchdog is armed **before** the spawn, and that order is the whole
-     * point of this block.
+     * Armed **before** the spawn — the hazard is an isolate that dies between
+     * the two.
      *
-     * The record above already says `running`, and every `sb_exec` gates on it.
-     * So from here until something writes a terminal state, the install owns the
-     * workspace — and if this isolate dies in the next few milliseconds, the
-     * alarm is the only thing that can take it back. Arming afterwards leaves a
-     * window where the gate is closed and nothing is scheduled to open it, which
-     * is not theoretical: a `runtime.exec` that threw on the container's
-     * WebSocket left a workspace `running` for half an hour, refusing every
-     * command, until the task hit its own timeout.
+     * The record above already says `running`, so from here until something
+     * writes a terminal state the gate is shut and the alarm is the only thing
+     * that can open it. Arming afterwards leaves a window with nothing scheduled
+     * to recover: a `runtime.exec` that threw on the container's WebSocket left
+     * a workspace `running` for half an hour, refusing every command.
      *
-     * Arming early is free. The handler re-reads the record and clears the
-     * intent if it is not `running`, so an install that fails or finishes first
-     * just costs one wake-up.
+     * Arming early is free — the handler clears the intent if the record is not
+     * `running`, so finishing first costs one wake-up.
      */
     await this.#install.armWatch();
 
@@ -1251,21 +1216,13 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     if (state.state !== "running") return state;
 
     /**
-     * `running` has an expiry, and everything above this line is why.
+     * `running` has an expiry — the proof the file header refers to.
      *
-     * `running` is the one state that blocks work: `sb_exec` waits on it and
-     * then refuses to run. Every other state is a fact the subagent can act on.
-     * So it is the state that must not be able to outlive the thing it
-     * describes — and the ways it can are not all reachable from here. The spawn
-     * can fail before the drain is attached; the drain can be cut short by an
-     * eviction; `getExec` can hand back a handle to a container that never
-     * answers. Each of those has a fix of its own, and none of them is a proof.
-     *
-     * This is the proof. The command carries a `timeoutMs` that the runtime
-     * enforces, so past that plus a wide margin, a live install is not a
-     * possibility — whatever the record says, the truth is that nobody is coming
-     * back with an exit code. Writing `failed` here is not a guess about what
-     * happened, it is the only accurate thing left to say.
+     * The command carries a `timeoutMs` the runtime enforces, so past that plus
+     * a wide margin a live install is not a possibility: whatever the record
+     * says, nobody is coming back with an exit code. Writing `failed` here is
+     * not a guess about what happened, it is the only accurate thing left to
+     * say — which is what makes it a bound rather than another guard.
      */
     if (this.#install.isStale(state, this.#installTimeoutMs)) {
       const minutes = Math.round((Date.now() - state.startedAt) / 60_000);

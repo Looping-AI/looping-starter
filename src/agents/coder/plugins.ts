@@ -19,26 +19,22 @@ import { code } from "./code";
  *
  * ## Two lists, because the parent and its subagents are not the same agent
  *
- * This agent **always delegates**: the parent orchestrates and reviews, and every
- * edit is made by a subagent. That is a deliberate split, not an accident of
- * configuration, and the reason is context. A parent that reads files, runs
- * builds and reads their output accumulates a session nobody can afford to keep
- * warm — and it is exactly the session that has to survive for the *whole* task,
- * across every round. Pushing the expensive, disposable half into subagents
- * leaves the parent holding a short transcript of decisions.
+ * This agent **always delegates**, and the reason is context. A parent that reads
+ * files, runs builds and reads their output accumulates the one session that has
+ * to survive the *whole* task, across every round. Pushing the expensive,
+ * disposable half into subagents leaves the parent holding a short transcript of
+ * decisions.
  *
- * So the parent's surface is: git, a browser, and read-only access to the
- * checkout so it can check a claim rather than take one on trust. What it does
- * not have is a shell, a writer, or an editor.
+ * So the parent gets git, a browser, and read-only access to the checkout — enough
+ * to check a claim rather than take it on trust. No shell, no writer, no editor.
  *
  * ## Why there is no `workspace()` here
  *
  * `@loopingai/plugins/workspace` is a virtual filesystem over this Durable
- * Object's own SQLite. The computer plugin's filesystem is a *different* Durable
- * Object's SQLite, mounted into a container. Installing both would hand the
- * model two unrelated filesystems and no way to tell from a path which one it is
- * addressing — so this agent has exactly one, and it is the one with a compiler
- * in it.
+ * Object's own SQLite; the computer plugin's is a *different* object's SQLite,
+ * mounted into a container. Installing both would hand the model two unrelated
+ * filesystems and no way to tell from a path which one it is addressing. This
+ * agent has exactly one, and it is the one with a compiler in it.
  */
 
 /** The sandbox tools the *parent* keeps: enough to verify, not enough to edit. */

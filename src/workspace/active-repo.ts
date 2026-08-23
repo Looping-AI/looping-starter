@@ -6,59 +6,48 @@ import type { PluginHost } from "@loopingai/core/host";
  *
  * ## The ordering problem this solves
  *
- * A workspace is one Durable Object, one container and **one repository** —
- * `@cloudflare/computer` pairs an object with exactly one container, so that is
- * structural rather than a convention. But the repository is not known when the
- * plugin list is built, and it is not known at the start of the task either: the
- * model chooses it by calling `repo_clone` with a URL.
- *
- * That is circular on the face of it. `repo_clone` runs `git clone` through the
- * container, so it needs a workspace *before* it can produce the repository that
- * names the workspace. The repo plugin's `beforeCheckout` hook breaks the cycle:
- * it fires with the parsed `owner/repo` after the host allowlist has passed and
- * before any git runs, which is exactly the moment to switch.
+ * A workspace is one Durable Object, one container and **one repository**, which
+ * is structural rather than conventional — `@cloudflare/computer` pairs an object
+ * with exactly one container. But the repository is not known when the plugin
+ * list is built, or even at the start of the task: the model chooses it by
+ * calling `repo_clone` with a URL, and `repo_clone` needs a workspace to run
+ * `git clone` in. The repo plugin's `beforeCheckout` hook breaks the cycle — it
+ * fires with the parsed `owner/repo` after the host allowlist passes and before
+ * any git runs.
  *
  * ## Why this is SQL and not `storage.get`
  *
- * The selection has to survive an isolate eviction mid-task — a new isolate with
- * an empty closure would otherwise fall back to a caller-level workspace, and
- * `repo_diff` would report an empty tree for a checkout that is sitting right
- * there. So it is persisted.
- *
- * But `workspaceName()` is a **synchronous** thunk: it is called on the path of
- * every tool, inside `computerExec`, where there is nowhere to await. Durable
- * Object `storage.get` is async; `storage.sql` is not. So the value lives in a
- * one-row table, written on selection and read synchronously on every call, with
- * an in-memory cache in front so the common case touches no storage at all.
+ * The selection must survive an isolate eviction mid-task, or a new isolate
+ * falls back to a caller-level workspace and `repo_diff` reports an empty tree
+ * for a checkout sitting right there. So it is persisted — but `workspaceName()`
+ * is a **synchronous** thunk called on the path of every tool, inside
+ * `computerExec`, where there is nowhere to await. `storage.get` is async;
+ * `storage.sql` is not. Hence a one-row table, with an in-memory cache in front
+ * so the common case touches no storage at all.
  *
  * ## Known limitation: one task at a time, per caller
  *
- * The row is keyed `id = 1` — **one selection per agent object**, and an agent
- * object is per caller, not per task. Two tasks from the same caller running at
- * once, cloning different repositories, therefore overwrite each other's
- * selection: the later `set()` wins, and from that moment the earlier task's own
- * tools (`repo_diff`, the reads, and the commit/push that ends it) resolve to the
- * *other* task's workspace. Cancellation cleanup follows the same wrong name.
+ * The row is keyed `id = 1` — one selection per agent object, and an agent object
+ * is per caller, not per task. Two tasks from one caller cloning different
+ * repositories overwrite each other: the later `set()` wins, and from then on the
+ * earlier task's own tools (`repo_diff`, the reads, the commit and push that end
+ * it) resolve to the *other* task's workspace, cancellation cleanup included.
  *
- * Delegated work is not exposed to this. A subagent facet receives its workspace
- * name on `ctx.runtime`, resolved on the parent at delegation time and pinned for
- * the life of the subtask, so a session cannot be moved out from under itself.
- * The exposure is the parent's own tool calls, between one task's clone and the
- * other's.
+ * Delegated work is not exposed — a facet gets its workspace name on
+ * `ctx.runtime`, resolved on the parent and pinned for the life of the subtask.
+ * The exposure is the parent's own tool calls.
  *
- * **It is not fixable in this file**, which is why this is documented rather than
- * patched. The fix is to key the selection by task, and nothing here can: core's
- * `PluginHost` exposes `env`, `storage`, `callerKey` and `aiGatewayId`, and no
- * task or context identifier at all — so a plugin, and this thunk, have no way to
- * ask which task they are serving. Closing it means adding that identity to
- * `PluginHost` upstream and threading it through `workspaceName()`, which must
- * stay synchronous. Until then this agent assumes one task at a time per caller,
- * and that assumption is load-bearing.
+ * **Not fixable in this file**, which is why it is documented rather than
+ * patched: the fix is to key the selection by task, and core's `PluginHost`
+ * exposes no task or context identity to key on. Closing it means adding that
+ * upstream and threading it through `workspaceName()`, which must stay
+ * synchronous. Until then, one task at a time per caller is a load-bearing
+ * assumption.
  *
- * Note the workspace itself should stay keyed on `(caller, repo)` even after
- * that change. Making workspaces per-task would give each one a cold container
- * and a fresh `node_modules`, which is the cost the whole design exists to avoid;
- * it is the *routing* that needs task scope, not the storage.
+ * The workspace itself should stay keyed on `(caller, repo)` even then: per-task
+ * workspaces would mean a cold container and a fresh `node_modules` every time,
+ * which is the cost this whole design exists to avoid. It is the *routing* that
+ * needs task scope, not the storage.
  */
 
 const TABLE = "coder_active_repo";

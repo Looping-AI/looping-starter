@@ -220,7 +220,7 @@ inside the container. A `claude-coder` subtask is one `claude -p` session — it
 own loop, its own tools, its own context management — which is why that agent
 overrides `executeChunk` instead of configuring a recipe. Their workspace Durable
 Objects are two thin subclasses of one shared `src/workspace/object.ts`,
-differing in a binding name, a log label and an egress policy.
+differing only in a `WorkspaceObjectConfig`.
 
 That egress policy is the whole reason `claude-coder` exists. An Anthropic
 **subscription** credential is refused for raw Messages API calls on every
@@ -371,7 +371,7 @@ the test that keeps this honest.
 ## What runs in CI
 
 ```bash
-npm run check              # wrangler types, prettier, eslint, tsc (src + test)
+npm run check              # wrangler types, prettier, eslint, tsc, comment path refs
 npm test                   # vitest, inside real workerd
 npm run verify:isolation   # per-agent module graphs + size ceilings
 npx wrangler deploy --dry-run --outdir dist
@@ -384,17 +384,18 @@ and esbuild's **metafile** — the exact list of modules in the graph, not a str
 is checked for plugins that agent does not install:
 
 ```
-✓ reactive: 3370 KiB (ceiling 3613 KiB), 465 modules, no cross-agent plugin
-✓ proactive: 1557 KiB (ceiling 1709 KiB), 449 modules, no cross-agent plugin
-✓ arc-player: 2866 KiB (ceiling 3223 KiB), 454 modules, no cross-agent plugin
+✓ <agent>: <size> (ceiling <max>), <n> modules, no cross-agent plugin
 ```
+
+One line per agent, and a failing one names the module that leaked and the import path
+that pulled it in. Sizes move with every dependency bump — the ceilings in
+[`scripts/verify-isolation.mjs`](scripts/verify-isolation.mjs) are what CI enforces, and
+raising one is a deliberate act that belongs in the same commit as whatever grew it.
 
 Proactive's `forbidden` list carries `@loopingai/core/dist/round/` as well as the
 plugins its siblings install. That is the strongest line in the file: core ships the
 whole delegating loop behind an opt-in subpath, and an agent that answers in one turn
 must not pay a byte for it. It is also why proactive is ~1.5 MiB rather than ~2.5.
-
-(Sizes move with every dependency bump; the ceilings are what CI enforces.)
 
 It earns its keep: it caught a real leak during this repo's own construction, when the
 shared base class still lived in `agents/reactive/` and arc-player extending it dragged
