@@ -5,6 +5,7 @@ import { makeDoHelpers } from "@loopingai/core/testing";
 import { getWorkspace } from "@cloudflare/computer";
 import type { InstallState } from "@loopingai/plugins/computer";
 import { INSTALL_PLAN } from "@/workspace/install-plan";
+import { TRUST_CA_COMMAND } from "@/workspace/object";
 
 /**
  * The install gate, and the two ways it used to hang forever.
@@ -447,5 +448,38 @@ describe("reclaiming an idle workspace", () => {
     // And once emptied it reports nothing to do rather than reclaiming again,
     // which is the loop this whole describe exists for.
     expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(false);
+  });
+});
+
+/**
+ * The CA-trust command, which has no other way to be wrong safely.
+ *
+ * It is a shell script carried as a string and run in a container the suite
+ * cannot reach, so the only failure that matters — it does not parse — would
+ * otherwise surface as a workspace with no working TLS and a log line nobody
+ * connects to a missing `\` .
+ */
+describe("the interception CA command", () => {
+  const lines = TRUST_CA_COMMAND.split("\n");
+
+  /**
+   * A newline ends a command in sh, so an `&&` or `||` opening a line is a
+   * syntax error rather than the continuation it looks like. The operators have
+   * to trail. This is the exact mistake the first draft made.
+   */
+  it("never opens a line with a shell operator", () => {
+    for (const line of lines) {
+      expect(line.trimStart()).not.toMatch(/^(&&|\|\|)/);
+    }
+  });
+
+  /**
+   * The listing runs before, and outside, the `if`. When the CA is missing it is
+   * the only evidence separating "mounted somewhere else" from "never
+   * provisioned", which is the question the whole step exists to answer.
+   */
+  it("lists the directory whether or not the CA is there", () => {
+    expect(lines[0]).toContain("ls -A /etc/cloudflare/certs");
+    expect(TRUST_CA_COMMAND).toContain("NO CA AT");
   });
 });

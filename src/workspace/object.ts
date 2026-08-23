@@ -212,6 +212,29 @@ const CONTAINER_IDLE_MS = 20 * 60_000;
 const STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
 
 /**
+ * Install the egress interception CA, and say what was there to install.
+ *
+ * One shell string rather than a script in the image, because the image cannot
+ * run this at all — see {@link WorkspaceObjectBase.trustInterceptionCa}. The
+ * listing comes first and runs unconditionally: when the CA is missing, *what
+ * else is in that directory* is the only evidence distinguishing "mounted
+ * somewhere else" from "never provisioned", and it costs one line.
+ */
+export const TRUST_CA_COMMAND = [
+  'ls -A /etc/cloudflare/certs 2>&1 || echo "(no /etc/cloudflare/certs)"',
+  "CA=/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+  'if [ -r "$CA" ]; then',
+  // Trailing operators, not leading ones: a newline ends a command in sh, so an
+  // `&&` opening the next line is a syntax error rather than a continuation.
+  '  install -m 644 "$CA" /usr/local/share/ca-certificates/cloudflare-containers-ca.crt &&',
+  "  update-ca-certificates > /dev/null 2>&1 &&",
+  '  echo TRUSTED || echo "TRUST FAILED"',
+  "else",
+  '  echo "NO CA AT $CA"',
+  "fi"
+].join("\n");
+
+/**
  * How long a `node_modules` probe is reused before it is asked again.
  *
  * The probe is a container round-trip and its answer only qualifies an advisory
@@ -912,6 +935,59 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * good tree is sitting there — and would say nothing useful about a tree that
    * has just been thrown away with its container.
    */
+  /**
+   * Trust the CA the egress interception presents, once there is one.
+   *
+   * **This cannot be done in the image's entrypoint**, which is where
+   * Cloudflare's own recipe puts it, and the reason is ordering rather than
+   * preference. Their recipe assumes interception is declared as container
+   * configuration, so the runtime mounts the CA before the container starts.
+   * `@cloudflare/computer` uses the raw container API, where the only
+   * interception hooks are methods called *after* `start()` — so an entrypoint
+   * runs strictly before the CA can exist, finds nothing, and reports the
+   * container un-intercepted while every later TLS connection fails.
+   *
+   * Here is the earliest point that is not too early: `#beginInstall` has
+   * awaited `ready()`, which completes the backend's `connect()` — start and
+   * interception both.
+   *
+   * Idempotent, and run on every install rather than tracked, because the state
+   * it would have to track is "has this *container* been trusted", and a
+   * container can be replaced between two calls without this object being told.
+   * An `install -m 644` against an install that already ran costs milliseconds
+   * next to the `npm ci` behind it; a flag that survives the container it
+   * describes costs a session.
+   *
+   * Never throws. A workspace that cannot trust the CA still has a checkout, a
+   * shell and a git history, and the install about to run will say plainly what
+   * went wrong — refusing to start it here would replace a legible TLS error
+   * with an opaque one.
+   */
+  async #trustInterceptionCa(): Promise<void> {
+    try {
+      using handle = await this.#workspace.runtime.exec(TRUST_CA_COMMAND, {
+        cwd: "/",
+        encoding: "utf8",
+        timeoutMs: 30_000
+      });
+      const result = await handle.result();
+      // Logged at info on every install, deliberately. The container's own
+      // stdout does not reach Workers Observability, so this line is the only
+      // place an operator can see whether the container can speak TLS at all —
+      // and its absence is itself the answer when a workspace never got this far.
+      console.info(`[${this.#tag}] container TLS trust`, {
+        id: this.ctx.id.toString(),
+        exitCode: result.exitCode,
+        output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim()
+      });
+    } catch (err) {
+      console.warn(`[${this.#tag}] could not trust the interception CA`, {
+        id: this.ctx.id.toString(),
+        err: String(err)
+      });
+    }
+  }
+
   async #dependenciesPresent(dir: string): Promise<boolean> {
     try {
       using handle = await this.#workspace.runtime.exec(
@@ -1040,6 +1116,10 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       );
       return current;
     }
+
+    // Before the resolver, so the command it picks runs against a container that
+    // can already reach a registry.
+    await this.#trustInterceptionCa();
 
     const probe = this.#probe();
     const resolution = await resolveInstallCommand(
