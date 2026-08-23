@@ -17,14 +17,13 @@
 # reads and writes — and that tree survives the container, which is the whole
 # reason this image replaced the `@cloudflare/sandbox` one.
 #
-# **The container's TLS trust is not established here**, and the reason is
-# ordering rather than preference. Under `egress: { mode: "http-gateway" }` the
-# runtime terminates the container's HTTPS under an ephemeral CA, and that CA is
-# mounted as part of enabling interception — which `@cloudflare/computer` does
-# *after* starting the container, so an entrypoint runs strictly too early to
-# find it. The workspace object installs it on the first cold-container command,
-# once interception exists; see `#trustInterceptionCa` in
-# `src/workspace/object.ts`. `NODE_OPTIONS` below is the other half.
+# **The container's TLS trust is not established here**, and cannot be: under
+# `egress: { mode: "http-gateway" }` the CA is mounted after the container
+# starts, so anything in this image runs too early to find it. The workspace
+# object installs it instead — `#trustInterceptionCa` in
+# `src/workspace/object.ts` carries the ordering constraint and the measurements.
+# `NODE_OPTIONS` below is the other half, and belongs here because it is an
+# image property.
 #
 # The tag on the `computerd` stage MUST track the `@cloudflare/computer` version
 # in package.json. The library running in the Worker speaks capnweb to the
@@ -236,7 +235,9 @@ ENV CI=1 \
 # The alternative is `NODE_EXTRA_CA_CERTS`, which cannot be set from here: the
 # path does not exist at build time and nothing in the image can export it into
 # a process the Worker spawns later. Supplying it per-exec would mean threading
-# one variable through three call paths with three different lifetimes.
+# one variable through every path that spawns a process in this container, each
+# with its own lifetime — and getting it wrong anywhere fails as a TLS error
+# that names no cause.
 #
 # Safe because `ca-certificates` is installed above, so the OS store already
 # holds the normal public roots — verified: `npm ping` reaches the registry with

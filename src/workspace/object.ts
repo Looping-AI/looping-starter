@@ -215,7 +215,9 @@ const STORAGE_CAP_BYTES = 8 * 1024 * 1024 * 1024;
  * Install the egress interception CA, and say what was there to install.
  *
  * One shell string rather than a script in the image, because the image cannot
- * run this at all — see {@link WorkspaceObjectBase.trustInterceptionCa}. The
+ * run this at all — see `#trustInterceptionCa` on {@link WorkspaceObjectBase},
+ * which carries the ordering constraint that puts it there. (Named as text: a
+ * `#private` member has no qualified name for `{@link}` to resolve.) The
  * listing comes first and runs unconditionally: when the CA is missing, *what
  * else is in that directory* is the only evidence distinguishing "mounted
  * somewhere else" from "never provisioned", and it costs one line.
@@ -477,6 +479,58 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     return (this.#workspaceMemo ??= new Workspace(this.#workspaceOptions()));
   }
 
+  /**
+   * Whether the container this object is talking to has had the CA installed.
+   *
+   * In memory, and that is correct rather than lazy: what it describes is a
+   * *container*, which does not outlive the isolate in any way worth persisting.
+   * A stored `true` would be the exact bug this is here to prevent — a flag
+   * surviving the container it describes, and vouching for its replacement.
+   *
+   * Wrong only in the safe direction. An isolate that lost it re-runs an
+   * idempotent `install -m 644`; an isolate that kept it across a container
+   * replacement is corrected by `#ready` below, which clears it the moment it
+   * sees a container that is not running.
+   */
+  #caTrusted = false;
+
+  /**
+   * Open the workspace, and make sure the container behind it can speak TLS.
+   *
+   * **Every path that might start a container goes through here**, which is the
+   * fix for a real gap rather than tidiness. The CA install used to hang off
+   * `#beginInstall`, so it reached a container only when that container was also
+   * due a dependency install — and the two are not the same question:
+   *
+   * - `#armInstallIfCold` deliberately declines to arm for a `skipped` or `idle`
+   *   install state. A repository with nothing to install therefore replaced its
+   *   container, ran every later command against an untrusted CA, and had no
+   *   install pending to fix it.
+   * - `#beginInstall` returns early when an install is already in flight, and
+   *   again when the workspace is full — both *before* the old call site. The
+   *   full-workspace case is the worst of them: egress is exactly what the agent
+   *   needs to dig itself out.
+   *
+   * Tied to container liveness instead. `ctx.container?.running` is read
+   * **before** `ready()`, because `ready()` is what starts a stopped container —
+   * afterwards every container looks running and the distinction is gone. That
+   * is the same signal `#armInstallIfCold` turns on, for the same reason.
+   *
+   * Cheap enough to sit on the busiest entry point in the object: at most one
+   * extra exec per isolate, plus one per cold container. A warm container costs
+   * a boolean.
+   *
+   * Private, like everything else in here that is not an RPC. On a Durable
+   * Object `protected` is a typechecker's opinion and not a runtime boundary —
+   * every non-`#` method is reachable over RPC — so a helper that starts
+   * containers is spelled `#`.
+   */
+  async #ready(): Promise<void> {
+    if (!this.ctx.container?.running) this.#caTrusted = false;
+    await this.#workspace.ready();
+    if (!this.#caTrusted) await this.#trustInterceptionCa();
+  }
+
   #workspaceOptions(): WorkspaceOptions {
     return {
       // `ctx.storage.sql.exec` returns a narrower row type than
@@ -560,7 +614,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     await this.#touch();
     await this.#repairAlarm();
     await this.#armInstallIfCold();
-    await this.#workspace.ready();
+    await this.#ready();
     return this.#workspace.stub();
   }
 
@@ -714,7 +768,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   ): Promise<RepoGitResult> {
     await this.#touch();
     await this.#repairAlarm();
-    await this.#workspace.ready();
+    await this.#ready();
 
     // Bound to the credential rather than checked before the call, which is
     // strictly stronger: this is the moment the token would be handed over, and
@@ -928,14 +982,6 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * Is there a `node_modules` in the container right now?
-   *
-   * Asked of the **container**, not the workspace, and that is the whole point:
-   * `node_modules` is never synced, so `ws.fs` would say no even when a perfectly
-   * good tree is sitting there — and would say nothing useful about a tree that
-   * has just been thrown away with its container.
-   */
-  /**
    * Trust the CA the egress interception presents, once there is one.
    *
    * **This cannot be done in the image's entrypoint**, which is where
@@ -947,16 +993,17 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * runs strictly before the CA can exist, finds nothing, and reports the
    * container un-intercepted while every later TLS connection fails.
    *
-   * Here is the earliest point that is not too early: `#beginInstall` has
-   * awaited `ready()`, which completes the backend's `connect()` — start and
-   * interception both.
+   * Here is the earliest point that is not too early: `#ready` has awaited the
+   * workspace's own `ready()`, which completes the backend's `connect()` —
+   * start and interception both. `#ready` is the only caller, and that is the
+   * point of it: this used to hang off `#beginInstall`, which meant a container
+   * was trusted only when it also happened to be due a dependency install.
    *
-   * Idempotent, and run on every install rather than tracked, because the state
-   * it would have to track is "has this *container* been trusted", and a
-   * container can be replaced between two calls without this object being told.
-   * An `install -m 644` against an install that already ran costs milliseconds
-   * next to the `npm ci` behind it; a flag that survives the container it
-   * describes costs a session.
+   * Idempotent, so the tracking in `#ready` is an optimisation rather than a
+   * correctness device — an `install -m 644` against a container that already
+   * ran it costs milliseconds. What would cost a session is a flag that
+   * outlived the container it describes, which is why the one that exists is in
+   * memory and cleared on any container that is not running.
    *
    * Never throws. A workspace that cannot trust the CA still has a checkout, a
    * shell and a git history, and the install about to run will say plainly what
@@ -971,10 +1018,27 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
         timeoutMs: 30_000
       });
       const result = await handle.result();
-      // Logged at info on every install, deliberately. The container's own
+      /**
+       * Marked on a command that *ran*, not on one that found a CA.
+       *
+       * The command exits 0 either way — it prints `NO CA AT …` when there is
+       * nothing to install — and that case is not worth retrying within a
+       * container: interception is configured by the `connect()` that `#ready`
+       * already awaited, so a CA absent now stays absent until the container is
+       * replaced. Retrying it on every call would buy nothing and cost a
+       * round-trip on the object's hottest path.
+       *
+       * A throw leaves this false, so an unreachable container is tried again.
+       */
+      this.#caTrusted = true;
+      // Logged at info once per container, deliberately. The container's own
       // stdout does not reach Workers Observability, so this line is the only
       // place an operator can see whether the container can speak TLS at all —
       // and its absence is itself the answer when a workspace never got this far.
+      //
+      // Once per container rather than per call is also what makes it readable:
+      // on the busiest entry point in the object, a line per call would bury the
+      // one that matters under thousands that say the same thing.
       console.info(`[${this.#tag}] container TLS trust`, {
         id: this.ctx.id.toString(),
         exitCode: result.exitCode,
@@ -988,6 +1052,14 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     }
   }
 
+  /**
+   * Is there a `node_modules` in the container right now?
+   *
+   * Asked of the **container**, not the workspace, and that is the whole point:
+   * `node_modules` is never synced, so `ws.fs` would say no even when a perfectly
+   * good tree is sitting there — and would say nothing useful about a tree that
+   * has just been thrown away with its container.
+   */
   async #dependenciesPresent(dir: string): Promise<boolean> {
     try {
       using handle = await this.#workspace.runtime.exec(
@@ -1054,7 +1126,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     opts?: { takeOverArmedAt?: number }
   ): Promise<InstallState> {
     await this.#touch();
-    await this.#workspace.ready();
+    await this.#ready();
 
     /**
      * One install at a time — the hazard is displacement.
@@ -1117,9 +1189,11 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       return current;
     }
 
-    // Before the resolver, so the command it picks runs against a container that
-    // can already reach a registry.
-    await this.#trustInterceptionCa();
+    // The CA is not installed here any more. It moved up into `#ready`, above
+    // the two early returns this used to sit below — an install already in
+    // flight, and a full workspace — because neither of those means the
+    // container can speak TLS. It still lands before the resolver, and now it
+    // lands before them too.
 
     const probe = this.#probe();
     const resolution = await resolveInstallCommand(
