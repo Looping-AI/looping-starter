@@ -10,11 +10,8 @@ export const CREDENTIALS_KEY = "claude-credentials";
  * Three places hold this object and they must hold the *same* one: the workspace
  * Durable Object (which turns it into the egress gateway), the parent's plugin
  * list (which registers the subtask type and resolves the workspace name), and
- * the subagent facet (which drives the session). The coder learned this the
- * expensive way one directory over — its cancellation path rebuilt a partial
- * copy of the container config without `shell: "bash"`, so a cancelled task's
- * cleanup ran under a different shell than every other command in the same
- * container.
+ * the subagent facet (which drives the session). A partial copy of a config like
+ * this has already cost an outage — see `@/workspace/container.ts`.
  *
  * ## The credential never enters the container, and barely leaves this file
  *

@@ -63,12 +63,11 @@ const PARENT_SANDBOX_CAPABILITY = [
 /**
  * This agent's container settings.
  *
- * The settings themselves are shared — see `@/workspace/container.ts`, and the
- * outage comment on it explaining why a second copy is not an option. All this
- * adds is which namespace they apply to.
+ * The settings themselves are shared — see `@/workspace/container.ts`, which
+ * carries the reason a second copy is not an option. All this adds is which
+ * namespace they apply to.
  *
- * Exported because the cancel path in `agent.ts` needs the *same* settings and
- * used to rebuild a partial copy.
+ * Exported because the cancel path in `agent.ts` needs the *same* settings.
  */
 export function container(env: Env, workspaceName: () => string) {
   return workspaceContainer(env.CODER_WORKSPACE, workspaceName);

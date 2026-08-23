@@ -45,7 +45,7 @@ export { ClaudeCoderSubagent } from "./agents/claude-coder/subagent";
 export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
 
 /**
- * One Worker, five agents, addressed by A2A `tenant`.
+ * One Worker, every agent below, addressed by A2A `tenant`.
  *
  * They share one origin, one endpoint, one signing key and one card:
  *
@@ -61,31 +61,13 @@ export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
  * address different objects. Adding an agent is one file plus a line below plus
  * its wrangler bindings; `npm run agent:new <tenant>` does all of it.
  *
- * ## Why not a path prefix per agent
- *
- * That is what this used to do, and it cannot work. The AgentCard lives at a
- * **well-known URI**, which RFC 8615 defines per-authority, so only one card per
- * origin is discoverable at the path A2A registered with IANA. A gateway
- * resolving `/.well-known/agent-card.json` against the origin found whichever
- * agent owned the bare path and pinned *its* key for every agent here — so the
- * rest registered under a name and key that were not theirs, and their push
- * callbacks were rejected after the model work was already done.
- *
- * `AgentInterface.tenant` is the protocol's own answer: "an opaque string used
- * for routing requests to a specific agent or tenant when multiple agents are
- * served behind a single A2A endpoint". Each agent's real card comes from
- * `GetExtendedAgentCard`, and every request names its tenant — there is no
- * default and no implicit routing.
- *
- * ## One signing key
- *
- * Every agent used to hold its own, which never bought anything: they share a
- * Worker and an `env`, so each could always read the others' secrets. The card
- * is per-origin and so is the key — `A2A_SIGNING_KEY`, core's default.
- *
- * What separates them is the gateway token's tenant claim, checked by core
- * against the tenant the request addressed. That is a real boundary: it is
- * cryptographic, and it holds even though they share an audience.
+ * A tenant rather than a path prefix, and one signing key rather than one per
+ * agent, both because the AgentCard lives at a **well-known URI** — RFC 8615
+ * defines those per-authority, so this origin serves one card and a gateway pins
+ * one key. What separates the agents is the gateway token's tenant claim,
+ * checked by core against the tenant the request addressed: a cryptographic
+ * boundary that holds even though they share an audience. The README works
+ * through why the alternative cannot be made to work.
  */
 export default {
   fetch: createA2AWorker<Env>({

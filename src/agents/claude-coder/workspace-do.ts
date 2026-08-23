@@ -16,20 +16,13 @@ import { claudeCodeConfig, CREDENTIALS_KEY } from "./claude-code";
  * The claude-coder's workspace, bound as `CLAUDE_CODER_WORKSPACE`.
  *
  * Everything a workspace does is in `src/workspace/object.ts`, shared with the
- * coder: one Durable Object, one container, one repository, the checkout in
- * SQLite, `computerd` mounting it at `/workspace`. Two things are this agent's
- * own, and both exist for the same reason — **the container must never hold an
- * Anthropic credential**.
+ * coder. Two things are this agent's own, and both exist so that the container
+ * never holds an Anthropic credential — see `./claude-code.ts`:
  *
  * 1. `egress: { mode: "http-gateway" }`, so every outbound request from the
  *    container is intercepted and handed to a `Fetcher` on this side of the
  *    boundary. That `Fetcher` swaps a real credential in.
  * 2. The credential pool's state, in this object's own storage.
- *
- * The container is an arbitrary-code-execution environment by design — `npm ci`
- * runs a cloned repository's `postinstall`, and the agent runs that repository's
- * test suite — so a `printenv` in there finds `CREDENTIAL_PLACEHOLDER` and
- * nothing else.
  */
 export class ClaudeCoderWorkspaceDO extends WorkspaceObjectBase {
   /**
@@ -80,8 +73,8 @@ export class ClaudeCoderWorkspaceDO extends WorkspaceObjectBase {
       // Chunk boundaries re-enter this object and `#touch()` roughly every
       // `windowMs`, which does hide it almost always — but "almost always" is
       // not what that rule promises, and one retried or delayed chunk is enough
-      // to stop the container under a running session and lose the work plus the
-      // 18.7-27k-token prefix that bought it.
+      // to stop the container under a running session and lose both the work and
+      // the cached prefix that bought it.
       //
       // Derived from the session timeout rather than written out, so raising one
       // moves the other. The margin covers the gap between a session ending and
@@ -95,16 +88,8 @@ export class ClaudeCoderWorkspaceDO extends WorkspaceObjectBase {
   }
 
   /**
-   * Is any credential usable right now, and if not, when?
-   *
-   * Asked by the facet **before** it starts a session, and the saving is real:
-   * an invocation carries an 18.7-27k-token cached prefix before it does
-   * anything, and starting one only to have the gateway refuse its first model
-   * call pays a container start and that prefix to learn what this RPC answers
-   * for free.
-   *
-   * Not consulted on resume — a session already running is not asking for a new
-   * credential, and refusing to drain one would strand a run that is doing fine.
+   * Is any credential usable right now, and if not, when? Asked by the facet
+   * before it starts a session — see `./subagent.ts`, which carries the reason.
    */
   async claudeCredentials(): Promise<Lead> {
     return await this.#session.credentials(this.#credentials);

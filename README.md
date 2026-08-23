@@ -222,42 +222,23 @@ overrides `executeChunk` instead of configuring a recipe. Their workspace Durabl
 Objects are two thin subclasses of one shared `src/workspace/object.ts`,
 differing in a binding name, a log label and an egress policy.
 
-That egress policy is the whole reason `claude-coder` exists. A Claude
+That egress policy is the whole reason `claude-coder` exists. An Anthropic
 **subscription** credential is refused for raw Messages API calls on every
-frontier model (see below), and accepted from the sanctioned client — so the
-credential has to reach a process running inside a container that also runs a
-cloned repository's `postinstall`. It never does: the session launches with a
-placeholder, and `{ mode: "http-gateway" }` routes every outbound request through
-a `Fetcher` on the Worker side which swaps the real one in. That gateway also
-holds an ordered **pool** of credentials and rotates when Anthropic says one's
-5-hour or weekly bucket is spent.
+frontier model and accepted from the sanctioned client — so reaching Opus on one
+means running that client, and the client runs in a container that also runs a
+cloned repository's `postinstall`. The credential never goes there: the session
+launches with a placeholder, and `{ mode: "http-gateway" }` routes every outbound
+request through a `Fetcher` on the Worker side which swaps the real one in. That
+gateway also holds an ordered **pool** of credentials and rotates when Anthropic
+says one's 5-hour or weekly bucket is spent.
 
-It used to run **Claude** rather than Workers AI, through an AI Gateway _custom
-provider_ whose origin was a sibling Worker (`looping-anthropic-proxy`) holding
-the Anthropic credentials. That whole path was removed on 2026-08-20. An
-Anthropic **subscription** credential does not serve raw Messages API calls on
-any frontier model — every Opus call came back `429` in ~10 ms at zero tokens,
-Sonnet followed, and the only model that answered was Haiku 4.5, which rejects
-the `output_config.effort` field the agent was built around. Holding two
-credentials on separate accounts did not help: both refused the same request.
-
-So the coder now runs `@cf/zai-org/glm-5.2` with `@cf/moonshotai/kimi-k2.7-code`
-as its fallback, through the `AI` binding like everything else. What is left in
-`src/config.ts` is one `CODER_MODEL` block that differs from the shared `MODEL`
-in exactly one way — a 32k output ceiling instead of 16k, because a coding round
-writes a file and a test in the same turn and a truncated patch reads as a
-finished one.
-
-There is **no model credential in this deployment**, for any agent. The `AI`
-binding is authenticated by the platform. Nothing to store, nothing to rotate,
-and the coder's container has never seen one.
-
-The secrets that went away with that path were `ANTHROPIC_PROXY_ORIGIN` and
-`AI_GATEWAY_TOKEN`; neither has a replacement. If a gateway `401` ever appears,
-it means Authenticated Gateway is switched on for the gateway named by
-`aiGatewayId` — switch it off, because the binding does not send a gateway token.
-`CREDENTIAL_COPY` in `src/agents/coder/workflow.ts` says as much to the operator
-at the moment it happens.
+Every agent's own round loop, both coders included, runs on Workers AI through
+the `AI` binding. **There is no model credential in this deployment**: the
+binding is authenticated by the platform, so there is nothing to store, nothing
+to rotate, and the coder's container has never seen one. A gateway `401` means
+Authenticated Gateway is switched on for the gateway named by `aiGatewayId` —
+switch it off, because the binding does not send a token.
+[`.env.example`](.env.example) is the full list of what a deployment does need.
 
 The container needs the **Workers Paid** plan and a running Docker daemon on the
 machine that runs `wrangler deploy` — wrangler builds `./Dockerfile` locally and
@@ -285,12 +266,10 @@ lives in the container and dies with it. The workspace notices a cold container
 and arms a reinstall before anything asks for one; see
 `src/workspace/install-plan.ts`.
 
-**There is deliberately no R2 bucket, and adding one buys nothing.** An earlier
-version snapshotted `/workspace` to R2 between tasks and never succeeded once in
-production: `@cloudflare/sandbox` mounted that archive _inside_ the container over
-s3fs, so it needed R2 S3-API credentials that a Workers R2 binding cannot supply —
-it has no presign API. Every task logged `InvalidBackupConfigError`. The
-DO-backed workspace replaced it and needs no credential at all.
+**There is deliberately no R2 bucket, and adding one buys nothing** — the checkout
+is already durable and `node_modules` is reproducible from the lockfile.
+[`wrangler.jsonc`](wrangler.jsonc) records why the snapshot approach it replaces
+could not work.
 
 Two consequences worth knowing before you debug something surprising:
 

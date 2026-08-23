@@ -187,6 +187,15 @@
       }
     ]
   },
+  // **A tag is applied once, ever.** Anything appended to a tag you have already
+  // deployed is simply never applied: a new class is never created, and the
+  // failure surfaces far from this file — at the first request to the agent, or
+  // at deploy with "New version of script does not export class 'X' which is
+  // depended on by existing Durable Objects". Always add a new tag.
+  //
+  // This has caught people out three times, including `agent:new` itself, which
+  // appends to the last tag because it cannot know what you have deployed. Check
+  // its edit before you deploy.
   "migrations": [
     {
       "tag": "v1",
@@ -197,12 +206,6 @@
       ]
     },
     {
-      // A NEW tag, not an addition to "v1". Migrations are applied by tag and
-      // never re-applied, so a class appended to an already-deployed tag is
-      // simply never created — and the failure surfaces at runtime as a missing
-      // Durable Object, far from this file. `agent:new` appends to the last tag
-      // because it cannot know whether you have deployed; when you have, split
-      // it out like this.
       "tag": "v2",
       "new_sqlite_classes": ["CoderAgent", "Sandbox"]
     },
@@ -211,28 +214,13 @@
       "new_sqlite_classes": ["CoderWorkspaceDO"]
     },
     {
-      // Its own tag, and this is the second time that rule has earned its
-      // comment. `deleted_classes` was first appended to "v3" — which was
-      // already deployed, so it was simply never applied, and the deploy failed
-      // with "New version of script does not export class 'Sandbox' which is
-      // depended on by existing Durable Objects". A tag is applied once, ever.
-      //
-      // `Sandbox` is gone from the code, and removing a class without saying so
-      // reclaims nothing: it leaves every object that class created holding its
-      // storage, unreachable and still billed. This is the line that frees them,
-      // and it is irreversible — those container filesystems were never the
-      // source of truth for anything, which was the whole problem with them.
+      // Removing a class from the code reclaims nothing on its own: every object
+      // it created keeps its storage, unreachable and still billed. This is the
+      // line that frees them, and it is irreversible.
       "tag": "v4",
       "deleted_classes": ["Sandbox"]
     },
     {
-      // The third time the "a tag is applied once, ever" rule has earned a
-      // comment, and the first where the tooling walked into it: `agent:new`
-      // appended `ClaudeCoderAgent` to **v1**, because it cannot know which tags
-      // have been deployed. v1 has, so the class would simply never have been
-      // created — and that surfaces at the first request to the agent, not at
-      // deploy. It was moved here by hand.
-      //
       // Both classes in one tag because they arrive together: the agent and the
       // workspace it owns.
       "tag": "v5",
@@ -273,36 +261,17 @@
   ],
 
   // --- secrets --------------------------------------------------------------
-  // One signing key for the deployment, not one per agent. The card is
-  // per-origin (a well-known URI is per-authority), so the key a gateway pins is
-  // too. Nothing was lost by collapsing three into one: the agents share this
-  // Worker and this `env`, so each could always read the others' keys — separate
-  // ones never expressed a boundary that existed. Generate with `npm run keygen`.
-  //
-  // What does separate them is the gateway token's tenant claim, which core
-  // checks against the tenant each request addresses.
-  //
-  // `GATEWAY_ORIGINS` is the allowlist of gateways this Worker accepts calls
-  // from — a property of the deployment, like the key.
+  // What each of these is, and why there is one signing key rather than one per
+  // agent, is in `.env.example` — the file an operator fills in. Declared here
+  // because `secrets.required` is what drives type generation and `wrangler
+  // dev`'s missing-secret warnings.
   //
   // **There is no model credential here, for any agent.** Every agent in this
   // Worker reaches Workers AI through the `AI` binding above, which Cloudflare
   // authenticates for the Worker — there is no key to store, rotate or leak, and
-  // the coder's container has never seen one either.
-  //
-  // Two secrets used to sit here and are gone as of 2026-08-20, when the coder
-  // moved off Claude:
-  //
-  //   - `ANTHROPIC_PROXY_ORIGIN` named a separate Worker that held the Anthropic
-  //     credential and was reached through an AI Gateway custom provider.
-  //   - `AI_GATEWAY_TOKEN` authenticated this Worker *to* the gateway, and was
-  //     needed only because that path called a gateway URL directly rather than
-  //     going through the binding.
-  //
-  // Neither has a replacement. If a `401` ever surfaces from the gateway now, it
-  // means Authenticated Gateway is switched on for the configured `aiGatewayId`
-  // and should be switched off — the binding does not send a token. See
-  // `CREDENTIAL_COPY` in `src/agents/coder/workflow.ts`.
+  // no AI Gateway token either. See `.env.example`, and `CREDENTIAL_COPY` in
+  // `src/agents/coder/workflow.ts` for what an operator is told when the path
+  // refuses a request anyway.
   "secrets": {
     "required": [
       "A2A_SIGNING_KEY",
@@ -315,31 +284,16 @@
       // allowlist at the moment the token is handed over.
       "GITHUB_TOKEN",
 
-      // claude-coder only, and **a pool rather than a secret**: entry 1 is used
-      // until Anthropic says its 5-hour or weekly bucket is spent, then the
-      // egress gateway rotates to entry 2 and, when both are spent, reports the
-      // reset time and stops. Order is priority.
+      // claude-coder only, and a credential pool rather than a secret — see
+      // `.env.example`, which is where an operator sets them, for how rotation
+      // works and why neither ever enters the container.
       //
-      // Both are `claude setup-token` OAuth credentials, and **both are listed
-      // because this deployment has two**. `secrets.required` drives type
-      // generation and `wrangler dev`'s missing-secret warnings, so a name left
-      // here and unset is typed as a definite string that is undefined at
-      // runtime and warns on every local run. To run on one credential, drop
-      // `_2` here *and* in `src/agents/claude-coder/claude-code.ts` — one
-      // change, two places. (The `.filter(Boolean)` there is defence against an
-      // unset secret, not a licence to leave one declared.)
-      //
-      // Rotating either secret works as you would expect: the pool keys its
-      // spent/rejected state on a fingerprint of the credential, not on its
-      // position, so a freshly minted token is tried immediately rather than
-      // inheriting the state of the one it replaced.
-      //
-      // **Neither ever enters the container.** They are read only inside
-      // `ClaudeCoderWorkspaceDO`'s egress gateway, which swaps one into the
-      // outbound request; the container is launched with a placeholder. That
-      // matters more here than anywhere else in this file: the container runs a
-      // cloned repository's `postinstall` and its test suite, so a `printenv` in
-      // there is a `printenv` a stranger wrote.
+      // **Both are listed because this deployment has two.** `secrets.required`
+      // drives type generation and `wrangler dev`'s missing-secret warnings, so
+      // a name left here and unset is typed as a definite string that is
+      // undefined at runtime and warns on every local run. To run on one
+      // credential, drop `_2` here *and* in
+      // `src/agents/claude-coder/claude-code.ts` — one change, two places.
       "CLAUDE_CODE_OAUTH_TOKEN_1",
       "CLAUDE_CODE_OAUTH_TOKEN_2"
     ]

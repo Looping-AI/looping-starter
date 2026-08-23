@@ -89,44 +89,16 @@ export const ARC_PLAYER_CONFIG: CoreConfigOverrides = {
 /**
  * The coder's models — a distinct pair from the shared `MODEL` above.
  *
- * Same provider as every other agent here (Workers AI through AI Gateway) and
- * the same primary, so what this block actually expresses is one difference:
- * **a much larger output ceiling**. A coding round writes a file and a test in
- * the same turn, and a truncated patch reads as a finished one, so 32k rather
- * than reactive's 16k. Everything else is deliberately the house default.
+ * Same provider and same primary as every other agent here, so what this block
+ * actually expresses is one difference: **a much larger output ceiling**. A
+ * coding round writes a file and a test in the same turn, and a truncated patch
+ * reads as a finished one, so 32k rather than reactive's 16k. Everything else
+ * is deliberately the house default, and the pair is chosen on the same grounds
+ * as `MODEL` — read that first.
  *
- * Both slots must support function calling and tolerate a long system prompt.
- * That is not a formality here — the round loop runs with `toolChoice:
- * "required"` and a round *ends* only when the model calls a control tool, so a
- * model that answers in prose instead burns the entire turn budget reaching no
- * ending. The pair is picked on that behaviour before anything else.
- *
- * The fallback is a different vendor and family, per `ModelConfig`'s advice:
- * what makes a primary throw — an outage, a rate limit, a bad deploy of one
- * vendor's serving stack — is correlated within a family, so a same-family
- * fallback is a retry wearing a costume. `resolveConfig` refuses an identical
- * pair outright.
- *
- * ## Why this is no longer Claude
- *
- * It was `claude-opus-5` / `claude-sonnet-5` until 2026-08-20, reached through
- * an AI Gateway custom provider whose origin was a separate Worker holding two
- * Anthropic *subscription* credentials. That path is gone, and it is worth
- * writing down why so nobody rebuilds it.
- *
- * A subscription credential does not work for raw Messages API calls on any
- * frontier model. Every Opus call returned `429` in ~10 ms at zero tokens, and
- * Sonnet followed. Haiku 4.5 was the sole exception, and Haiku 4.5 rejects the
- * `output_config.effort` field this agent was built around — so the one model
- * that answered was the one model that could not be used. Holding two
- * credentials on separate accounts did not clear it either: both refused the
- * same request. The remedy is not a better proxy; it is either a real API
- * credential or the sanctioned `claude-code` client, and neither is this file's
- * business.
- *
- * `reasoningEffort` is now plain `"high"`, inside core's three-value union. The
- * `xhigh` this used to run at existed only as an argument to the Anthropic
- * runtime and has nothing to reach through any more.
+ * Do not point this at a Claude model. Reaching one on a subscription
+ * credential is what `claude-coder` exists for and needs a whole container to
+ * do safely; see `src/agents/claude-coder/agent.ts`.
  */
 const CODER_MODEL = {
   chatModelId: "@cf/zai-org/glm-5.2",
@@ -232,15 +204,10 @@ export const CLAUDE_CODE_SESSION = {
    * window, so `ClaudeCoderWorkspaceDO` raises its own above this value —
    * derived from this constant, so the two cannot drift.
    *
-   * That is a correction. The argument here used to be that the length was safe
-   * because the idle clock is re-armed whenever anything enters the workspace
-   * object, and every chunk boundary does, at most `windowMs` apart. The first
-   * half is true and the conclusion does not follow: it makes the container's
-   * survival depend on chunk boundaries arriving on time, and a retried or
-   * delayed chunk is all it takes to exceed the remaining twelve minutes. The
-   * cost of being wrong is the container stopped under a live session, losing
-   * the work and the 18.7-27k-token prefix that bought it. A window wider than
-   * the whole session does not need the argument at all.
+   * That derivation is the point: a session stays detached for its whole
+   * timeout, so anything narrower makes the container's survival depend on
+   * chunk boundaries arriving on time, and one retried or delayed chunk stops
+   * it under live work.
    */
   timeoutMs: 40 * 60_000,
 

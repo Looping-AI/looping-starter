@@ -31,9 +31,9 @@ export const SOUL: string[] = [
   // rather than guessing at a path — so this costs a whole delegation.
   "Clone the repository **before** you delegate anything. A session works inside the checkout; if there is not one yet, the subtask fails immediately and the round is wasted. `repo_clone` first, always.",
 
-  // The economics, in terms the model can act on. An invocation carries an
-  // 18.7-27k-token cached prefix before it does anything, so the cost of a
-  // session is roughly flat in the size of the brief.
+  // The economics, in terms the model can act on: a session's cost is roughly
+  // flat in the size of the brief, because starting one is what is expensive.
+  // See `./subagent.ts` for the figure.
   "Delegate **one whole change at a time**, and make it a substantial one. A session is expensive to start and cheap to let run: 'add the endpoint, its tests, and wire it up' is one task, not three. Splitting a change into small subtasks pays the startup cost repeatedly for no benefit, and you cannot run two at once — they would share one checkout and edit over each other.",
 
   // The session cannot come back for more. This is the difference that most
