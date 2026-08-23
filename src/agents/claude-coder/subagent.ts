@@ -17,7 +17,7 @@ import {
   type DrainOutcome,
   type SessionRuntime
 } from "@loopingai/plugins/claude-code";
-import { truncateOutput, type InstallState } from "@loopingai/plugins/computer";
+import { sessionAdvisory, truncateOutput } from "@loopingai/plugins/computer";
 import { CLAUDE_CODE_SESSION, CLAUDE_CODER_CONFIG } from "@/config";
 import { claudeCodeConfig } from "./claude-code";
 import { subagentPlugins } from "./plugins";
@@ -82,73 +82,6 @@ export async function settleDrain(
       "the working-tree reset may race its final filesystem sync"
   );
   return false;
-}
-
-/** How much of a failed install's own output to put in front of the session. */
-const INSTALL_TAIL_MAX = 2_000;
-
-/**
- * What the host's dependency install has to say for itself, addressed to a
- * Claude Code session.
- *
- * Deliberately not `installGate` from `@loopingai/plugins/computer`, which
- * answers the same question for a different reader: its wording — "The command
- * below still ran", "call again in a moment" — describes an `sb_exec` gate
- * refusing one tool call. There is no command below here; there is a whole
- * session about to start, and it can run `npm ci` itself. Same facts, said to
- * somebody whose available actions differ.
- *
- * `undefined` for `idle` and `done`: a session told that its dependencies are
- * fine has been told nothing, at the cost of prefix tokens on every run. Every
- * state that means "the tree is not what you would assume" returns words.
- */
-export function installNote(status: InstallState): string | undefined {
-  if (status.state === "running") {
-    const secs = Math.round((Date.now() - status.startedAt) / 1000);
-    return (
-      `The host is still installing this checkout's dependencies (\`${status.command}\`, ` +
-      `started ${secs}s ago). Anything importing from \`node_modules\` may fail ` +
-      "until it finishes. Wait and retry rather than starting a second install " +
-      "on top of the one already running."
-    );
-  }
-
-  /**
-   * Both writers of `skipped` carry a reason, and they are not the same news:
-   * one is a checkout with nothing to install, the other is a workspace at its
-   * storage ceiling, which accepts no further writes at all. Rendering the
-   * reason covers both without this having to classify them — and the ceiling
-   * is precisely the state a session must not discover by having its edits
-   * silently fail to persist.
-   */
-  if (status.state === "skipped") {
-    return (
-      `The host installed no dependencies: ${status.reason}\n\nThat is ` +
-      "sometimes routine — a checkout with nothing to install — and sometimes a " +
-      "wall: a workspace at its storage ceiling accepts no further writes, so " +
-      "edits made here will not survive. Read the reason before deciding which. " +
-      "If it is the second, report it and stop; nothing you do will persist."
-    );
-  }
-
-  if (status.state === "failed") {
-    const code =
-      status.exitCode === undefined ? "" : ` (exit ${status.exitCode})`;
-    const tail = status.tail
-      ? `\n\n\`\`\`\n${truncateOutput(status.tail.trim(), INSTALL_TAIL_MAX)}\n\`\`\``
-      : "";
-    return (
-      `The host's dependency install \`${status.command}\` **failed**${code}: ` +
-      `${status.error}${tail}\n\nSo \`node_modules\` is missing or incomplete. ` +
-      "Read that output before treating a build or test failure as your own. " +
-      "If it looks transient, re-run the install yourself. If it is an " +
-      "environment fault you cannot fix from in here — no network, a refused " +
-      "registry, a TLS failure — **say exactly that and stop**, rather than " +
-      "working around it: that report is the only way the operator finds out."
-    );
-  }
-
-  return undefined;
 }
 
 export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
@@ -269,28 +202,27 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
     }
 
     /**
-     * What the host's own dependency install is doing, folded into the brief.
+     * What is true about the workspace, folded into the brief.
      *
-     * The session starts whether or not `node_modules` is there, and its own
-     * report is the only channel out — a subtask carries what the session said
-     * and nothing else. So a fact the session is not given is a fact the parent
-     * and the operator never see either, and the install's state has to be part
-     * of the brief rather than something the session could go and look up.
+     * The session starts whatever the workspace's state, and its own report is
+     * the only channel out — a subtask carries what the session said and nothing
+     * else. So a fact the session is not given is a fact the parent and the
+     * operator never see either, which is why this belongs in the brief rather
+     * than somewhere the session could look it up. It cannot: it has no tool
+     * that reaches the host.
      *
-     * **Reported, never enforced**, and that is the hard-won part rather than a
-     * shortcut — see `installGate`'s docblock in `@loopingai/plugins/computer`.
-     * Blocking on a *failed* install deadlocks, because nothing clears that
-     * record except another checkout: the workspace would refuse work for the
-     * rest of the session while telling the model to re-run the very install it
-     * is refusing to run. Returning `{ done: false }` to wait out a *running*
-     * one is no better here — such a chunk returns in milliseconds, so it would
-     * spend the branch's whole chunk allowance spinning.
+     * **Reported, never enforced.** Nothing here refuses to start the session.
+     * Blocking on a broken install deadlocks — nothing clears that record except
+     * another checkout — and returning `{ done: false }` to wait out one in
+     * flight would spend the branch's whole chunk allowance, since such a chunk
+     * returns in milliseconds. A Claude Code session can run `npm ci` itself, so
+     * the useful thing is to hand it the facts.
      *
-     * A Claude Code session can run `npm ci` itself, so the useful thing is to
-     * hand it the facts and let it decide. First chunk only: a resumed session
-     * was told this already.
+     * The wording is the plugin's, deliberately: severity belongs with the
+     * definition of each advisory rather than being re-derived here from an
+     * error string. First chunk only — a resumed session was told this already.
      */
-    const note = cursor ? undefined : installNote(await stub.installStatus());
+    const note = cursor ? undefined : sessionAdvisory(await stub.advisories());
 
     // `using`, so the client is released even when the drain throws. The handle
     // it hands back is rebuilt on this side of the boundary from the stub's byte
@@ -412,23 +344,18 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
    * What the session is asked to do.
    *
    * The subtask's own prompt, plus the verbatim history the delegating model
-   * selected, plus whatever the dependency install has to say for itself. A
-   * Claude Code session has no view of the parent's conversation and cannot
-   * ask, so anything that matters has to be inline — which is the same contract
-   * every subagent in this repo works under, said to a different process. The
-   * install note is inline for the same reason: the session cannot query the
-   * host, and a failing `npm ci` is the difference between a tool call that is
-   * worth retrying and one that never will be.
+   * selected, plus whatever the workspace has to say for itself. A Claude Code
+   * session has no view of the parent's conversation and cannot ask, so anything
+   * that matters has to be inline — which is the same contract every subagent in
+   * this repo works under, said to a different process. The workspace note is
+   * inline for the same reason: the session cannot query the host, and a broken
+   * install or a workspace that has stopped accepting writes is the difference
+   * between a failure worth retrying and one that never will be.
    */
-  #brief(request: RecipeExecutionRequest, installNote?: string): string {
+  #brief(request: RecipeExecutionRequest, note?: string): string {
     const parts = [request.prompt];
-    if (installNote) {
-      parts.push(
-        "",
-        "## The state of this workspace's dependencies",
-        "",
-        installNote
-      );
+    if (note) {
+      parts.push("", "## The state of this workspace", "", note);
     }
     if (request.references.length > 0) {
       parts.push(

@@ -29,7 +29,7 @@ import { INSTALL_PLAN } from "@/workspace/install-plan";
 /** A fresh workspace per test — DO storage never leaks between them. */
 const { freshStub: freshWorkspace } = makeDoHelpers(env.CODER_WORKSPACE);
 
-/** Read the raw install record, bypassing `installStatus`'s own repair path. */
+/** Read the raw install record, bypassing the staleness repair `advisories` applies. */
 function storedInstall(stub: DurableObjectStub) {
   return runInDurableObject(stub, (_instance, state) =>
     state.storage.get<InstallState>("install")
@@ -87,13 +87,13 @@ describe("the install gate", () => {
       } satisfies InstallState)
     );
 
-    const status = await stub.installStatus();
+    const [advisory] = await stub.advisories();
 
-    expect(status.state).toBe("failed");
+    expect(advisory?.kind).toBe("deps-broken");
     // The message is load-bearing — it is what the subagent reads instead of
     // waiting, so it has to say the command is not coming back.
-    if (status.state === "failed") {
-      expect(status.error).toMatch(/not going to finish/);
+    if (advisory?.kind === "deps-broken") {
+      expect(advisory.error).toMatch(/not going to finish/);
     }
 
     // And it is written down, so the next `sb_exec` does not re-derive it.
@@ -133,8 +133,8 @@ describe("the install gate", () => {
     // describes nothing.
     expect((await storedInstall(stub))?.state).toBe(state.state);
     // The guard's live path — returning the in-flight install untouched — needs
-    // a real container to reach, since `installStatus()` verifies rather than
-    // trusts. It is covered end to end rather than here.
+    // a real container to reach, since the record is verified rather than
+    // trusted. It is covered end to end rather than here.
   });
 
   it("leaves a young running record alone", async () => {
@@ -151,9 +151,9 @@ describe("the install gate", () => {
     // Half a minute in, with no container to re-attach to. The re-attach fails
     // and says so — what must *not* happen is the staleness bound firing early
     // and declaring a healthy install dead thirty seconds after it started.
-    const status = await stub.installStatus();
-    if (status.state === "failed") {
-      expect(status.error).not.toMatch(/not going to finish/);
+    const [advisory] = await stub.advisories();
+    if (advisory?.kind === "deps-broken") {
+      expect(advisory.error).not.toMatch(/not going to finish/);
     }
   });
 
@@ -178,7 +178,12 @@ describe("the install gate", () => {
       });
     });
 
-    expect((await stub.installStatus()).state).toBe("skipped");
+    // `deps-absent`, not silence: a session that finds no `node_modules` should
+    // be told the host looked and there was nothing to install, rather than left
+    // to wonder whether an install is still coming.
+    expect(await stub.advisories()).toEqual([
+      { kind: "deps-absent", reason: "no package.json" }
+    ]);
   });
 
   /**
@@ -201,13 +206,13 @@ describe("the install gate", () => {
       } satisfies InstallState)
     );
 
-    // No container in the pool, so `#dependenciesPresent` reports absent and the
-    // failure still describes reality. It is left exactly as it was.
-    //
-    // The *positive* path — a `failed` record flipping back to `done` once the
-    // subagent has installed by hand — needs a real container to reach, since the
-    // probe asks the container rather than the workspace. Covered end to end.
-    expect((await stub.installStatus()).state).toBe("failed");
+    // Reported whatever the `node_modules` probe says. That probe is `test -d`,
+    // which the wreckage of a half-finished install satisfies just as well as a
+    // healthy tree, so it qualifies the advisory rather than deleting it — and
+    // the record itself is never rewritten to say something it did not observe.
+    const advisories = await stub.advisories();
+    expect(advisories.map((a) => a.kind)).toEqual(["deps-broken"]);
+    expect((await storedInstall(stub))?.state).toBe("failed");
   });
 });
 
