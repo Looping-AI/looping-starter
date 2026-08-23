@@ -5,8 +5,10 @@ import {
   buildCompletedTask,
   buildFailedTask,
   buildNoReplyCompletedTask,
+  deliverAbandonedTask,
   deliverTerminalTask,
-  type GatewayIdentity
+  type GatewayIdentity,
+  type TurnPushContext
 } from "@loopingai/core/a2a";
 import type { ProactiveAgent } from "./agent";
 import { proactive } from "./definition";
@@ -27,6 +29,23 @@ import { proactive } from "./definition";
  * (deterministic across dispatch retries), so a re-dispatch never starts a second
  * run — `converse` executes exactly once.
  */
+/**
+ * What this agent tells a user when its retries run out.
+ *
+ * Its own string, and deliberately **not** `roundPolicy.copy.taskFailed`.
+ * `round-policy.ts` says in its own docblock that it belongs to the two round
+ * agents, and it value-imports `DELEGATE_TOOL_NAME` from
+ * `@loopingai/core/subtasks` — so reaching for it here pulled the whole
+ * delegation machinery into an agent that answers in one turn and pushed this
+ * bundle 337 KiB over its ceiling. `npm run verify:isolation` caught it, which
+ * is exactly what that ceiling is for.
+ */
+const ABANDONED_COPY =
+  "I could not finish this — something on the way to the model kept failing " +
+  "and did not recover. Nothing was changed. Sending the request again is " +
+  "worth a try; if it keeps happening, an operator should check the logs for " +
+  "this task id.";
+
 export interface NotifyTaskParams {
   /** The accepted task id (echoed back to the gateway on the callback). */
   taskId: string;
@@ -61,6 +80,14 @@ export interface NotifyTaskDeps {
   ) => DurableObjectStub<ProactiveAgent>;
   /** The deployment's Ed25519 private JWK, for the terminal callback. */
   signingKey: string;
+  /**
+   * What the user is told when the retries run out — see {@link runNotifyTask}.
+   *
+   * A dep rather than a constant because it is user-facing copy, and this
+   * repository keeps that with the agent: core ships none, which is why
+   * `deliverAbandonedTask` takes the words rather than inventing them.
+   */
+  abandonedCopy: string;
 }
 
 export class NotifyTaskWorkflow extends WorkflowEntrypoint<
@@ -73,7 +100,8 @@ export class NotifyTaskWorkflow extends WorkflowEntrypoint<
   ): Promise<void> {
     await runNotifyTask(event.payload, step, {
       resolveAgent: (identity) => proactive.resolveAgent(this.env, identity),
-      signingKey: this.env.A2A_SIGNING_KEY
+      signingKey: this.env.A2A_SIGNING_KEY,
+      abandonedCopy: ABANDONED_COPY
     });
   }
 }
@@ -89,6 +117,41 @@ export async function runNotifyTask(
   p: NotifyTaskParams,
   step: WorkflowStep,
   deps: NotifyTaskDeps
+): Promise<void> {
+  const push: TurnPushContext = {
+    taskId: p.taskId,
+    contextId: p.contextId,
+    pushUrl: p.pushUrl,
+    pushToken: p.pushToken,
+    jku: p.jku
+  };
+  try {
+    await generateAndDeliver(p, step, deps, push);
+  } catch (cause) {
+    // The same guard core puts inside `runHandleTask`, wired by hand because
+    // this agent's orchestration is its own — a straight line, not a round loop.
+    // Without it, a `generate` step that exhausts its retries unwinds past the
+    // delivery below and leaves the Task in `working` with the user told
+    // nothing, which is exactly the failure a delegating agent hit in production
+    // on 2026-08-19.
+    await deliverAbandonedTask(step, cause, {
+      push,
+      signingKey: deps.signingKey,
+      saveTask: (task) => deps.resolveAgent(p.identity).saveTask(task),
+      text: deps.abandonedCopy,
+      // No `sweep`: this agent delegates to nothing, so it has no managed
+      // children to reclaim — the same reason the ordinary delivery omits one.
+      label: "proactive"
+    });
+  }
+}
+
+/** The straight line itself: accept, generate once, deliver. */
+async function generateAndDeliver(
+  p: NotifyTaskParams,
+  step: WorkflowStep,
+  deps: NotifyTaskDeps,
+  push: TurnPushContext
 ): Promise<void> {
   // Resolved **inside** each step body, never once up here. A stub is a live
   // connection; a severed one never reconnects, so a workflow that hoisted it
@@ -133,13 +196,7 @@ export async function runNotifyTask(
   // the cancellation check. No `sweep`: this agent delegates to nothing, so it
   // has no managed children to reclaim.
   await deliverTerminalTask(step, {
-    push: {
-      taskId: p.taskId,
-      contextId: p.contextId,
-      pushUrl: p.pushUrl,
-      pushToken: p.pushToken,
-      jku: p.jku
-    },
+    push,
     // One key per deployment: the card sits at a well-known URI, which RFC 8615
     // defines per-authority, so this origin publishes one card and the gateway
     // pins one key for every agent on it.

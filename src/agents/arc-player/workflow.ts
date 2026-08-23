@@ -26,7 +26,10 @@ export class ArcHandleTaskWorkflow extends WorkflowEntrypoint<
       resolveAgent: (identity) => arcPlayer.resolveAgent(this.env, identity),
       config: resolveConfig(ARC_PLAYER_CONFIG),
       policy: roundPolicy,
-      signingKey: this.env.A2A_SIGNING_KEY
+      signingKey: this.env.A2A_SIGNING_KEY,
+      // Names this agent in core's abandoned-task log line, which is the only
+      // record when a step exhausts its retries and the Task is failed for it.
+      label: "arc-player"
     });
   }
 }

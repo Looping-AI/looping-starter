@@ -6,7 +6,6 @@ import {
   type HandleTaskParams,
   type NonRecoverableKind
 } from "@loopingai/core/round";
-import { deliverAbandonedTask } from "@/abandoned-task";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { coder } from "./definition";
@@ -84,31 +83,13 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
 /** The coder agent's task workflow: core's orchestration, its own binding. */
 export class CoderWorkflow extends WorkflowEntrypoint<Env, HandleTaskParams> {
   /**
-   * The catch is the whole reason `run` is not just the `runHandleTask` call:
-   * without it, a transient fault that never stops being one leaves the Task in
-   * `working` and the user told nothing. The reasoning, and the production
-   * incident behind it, is on `deliverAbandonedTask` in `@/abandoned-task`.
+   * No `catch` here, deliberately. A transient fault that never stops being one
+   * used to leave the Task in `working` with the user told nothing — this file
+   * carried a hand-written recovery for it, and three sibling agents did not.
+   * Core 0.8.2 moved the guard inside `runHandleTask`, which already held every
+   * input it needed, so the recovery is now something no agent can forget.
    */
   async run(
-    event: Readonly<WorkflowEvent<HandleTaskParams>>,
-    step: WorkflowStep
-  ): Promise<void> {
-    try {
-      await this.handle(event, step);
-    } catch (err) {
-      await deliverAbandonedTask({
-        params: event.payload,
-        step,
-        cause: err,
-        signingKey: this.env.A2A_SIGNING_KEY,
-        label: "coder",
-        agent: () => coder.resolveAgent(this.env, event.payload.identity)
-      });
-    }
-  }
-
-  /** The orchestration proper — every ordinary outcome ends inside here. */
-  private async handle(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
   ): Promise<void> {
@@ -135,7 +116,10 @@ export class CoderWorkflow extends WorkflowEntrypoint<Env, HandleTaskParams> {
         });
         return CREDENTIAL_COPY[kind];
       },
-      signingKey: this.env.A2A_SIGNING_KEY
+      signingKey: this.env.A2A_SIGNING_KEY,
+      // Names this agent in the abandoned-task log line. Five agents share this
+      // Worker and therefore one log stream.
+      label: "coder"
     });
   }
 }

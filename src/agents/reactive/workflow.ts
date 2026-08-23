@@ -31,7 +31,10 @@ export class HandleTaskWorkflow extends WorkflowEntrypoint<
       resolveAgent: (identity) => reactive.resolveAgent(this.env, identity),
       config: resolveConfig(REACTIVE_CONFIG),
       policy: roundPolicy,
-      signingKey: this.env.A2A_SIGNING_KEY
+      signingKey: this.env.A2A_SIGNING_KEY,
+      // Names this agent in core's abandoned-task log line, which is the only
+      // record when a step exhausts its retries and the Task is failed for it.
+      label: "reactive"
     });
   }
 }
