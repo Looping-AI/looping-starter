@@ -14,6 +14,7 @@ import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
 import { REPO_FAMILY } from "@loopingai/plugins/repo";
 import { parentPlugins, subagentPlugins } from "@/agents/claude-coder/plugins";
 import {
+  installNote,
   settleDrain,
   type ClaudeCoderSubagent
 } from "@/agents/claude-coder/subagent";
@@ -325,5 +326,62 @@ describe("waiting for an interrupted session to unwind", () => {
 
     expect(interrupted).toBe(false);
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+/**
+ * What a session is told about the tree it is about to work in.
+ *
+ * The case that earned this: `claude -p` starts whether or not `node_modules`
+ * is there, so a container whose `npm ci` could not reach the registry produced
+ * a session failing on its first tool call and an install failing in parallel,
+ * and the two arrived at the parent as one wordless `failed`. The note is the
+ * only place either fact is said out loud to somebody who can act on it.
+ */
+describe("what the session is told about the install", () => {
+  it("hands a failed install's own output to the session", () => {
+    const note = installNote({
+      state: "failed",
+      command: "npm ci --no-audit --no-fund",
+      finishedAt: Date.now(),
+      error: "exited 1",
+      exitCode: 1,
+      tail: "npm error code SELF_SIGNED_CERT_IN_CHAIN"
+    });
+
+    expect(note).toContain("npm ci --no-audit --no-fund");
+    expect(note).toContain("SELF_SIGNED_CERT_IN_CHAIN");
+    // The instruction that matters: an environment fault it cannot fix has to
+    // come back as a report, not as a workaround nobody can see.
+    expect(note).toContain("say exactly that and stop");
+  });
+
+  it("says an install is still running rather than letting it look done", () => {
+    const note = installNote({
+      state: "running",
+      command: "npm ci",
+      startedAt: Date.now() - 30_000
+    });
+
+    expect(note).toContain("still installing");
+    expect(note).toContain("npm ci");
+  });
+
+  /**
+   * Silence on the happy path is deliberate. A session told its dependencies
+   * are fine has learned nothing, and it pays for the sentence in prefix tokens
+   * on every single run.
+   */
+  it("says nothing when there is nothing to say", () => {
+    expect(installNote({ state: "idle" })).toBeUndefined();
+    expect(
+      installNote({
+        state: "done",
+        command: "npm ci",
+        exitCode: 0,
+        finishedAt: Date.now(),
+        ms: 74_000
+      })
+    ).toBeUndefined();
   });
 });
