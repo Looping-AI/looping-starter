@@ -109,6 +109,9 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Still needed, and now only for `repo_open_pr` — the one credentialed
       // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
+      // Same identity as `coder`'s, deliberately — see the comment on `author`
+      // in `src/agents/coder/plugins.ts`.
+      author: { name: "looping-coder", email: host.env.GITHUB_EMAIL },
 
       beforeCheckout: ({ owner, repo: repoName }) =>
         active.set(`${owner}/${repoName}`),

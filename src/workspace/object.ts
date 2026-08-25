@@ -566,11 +566,12 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       // operations driven from here — clone, fetch, push — are not among them.
       // Set anyway so that a `pull` or `merge` added later fails on the merge
       // itself rather than on `MissingIdentityError`, and set to the same pair
-      // `/repo` writes into the checkout's own config at clone time, so a commit
-      // cannot be attributed differently depending on which side made it.
+      // `/repo` writes into the checkout's own config at clone time (see
+      // `author` in each agent's `plugins.ts`), so a commit cannot be
+      // attributed differently depending on which side made it.
       defaultGitIdentity: {
         name: "looping-coder",
-        email: "coder@looping.invalid"
+        email: this.env.GITHUB_EMAIL
       }
     };
   }

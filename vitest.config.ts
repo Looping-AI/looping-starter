@@ -42,6 +42,9 @@ process.env.ARC_API_KEY ??= "test-key";
 // it from the `jku` on each turn, so there is nothing to answer — and a default
 // here would hide the case an operator actually hits.
 process.env.GITHUB_TOKEN ??= "test-token";
+// The email half of the same identity — never real either, and unreachable on
+// purpose (`.invalid` is the reserved TLD for exactly this).
+process.env.GITHUB_EMAIL ??= "test-coder@looping.invalid";
 // claude-coder's credential pool. Never real, and nothing in the suite reaches
 // Anthropic — the gateway is tested against a stubbed `fetch` in
 // `@loopingai/plugins`, and no spec here starts a session. Two of them because

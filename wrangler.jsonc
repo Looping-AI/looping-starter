@@ -283,6 +283,13 @@
       // argument, and never enters the container — `onAuth` checks the host
       // allowlist at the moment the token is handed over.
       "GITHUB_TOKEN",
+      // Both coders, same reason. The email half of the commit identity the
+      // token's name half already has — see `defaultGitIdentity` in
+      // `src/workspace/object.ts` and `author` in each `plugins.ts`. The name
+      // stays the generic `looping-coder`, unconfigurable, so this is the only
+      // knob: without it every commit is attributed to a real person's token
+      // under a fake, unreachable address.
+      "GITHUB_EMAIL",
 
       // claude-coder only, and a credential pool rather than a secret — see
       // `.env.example`, which is where an operator sets them, for how rotation
