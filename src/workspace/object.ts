@@ -570,7 +570,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       // `author` in each agent's `plugins.ts`), so a commit cannot be
       // attributed differently depending on which side made it.
       defaultGitIdentity: {
-        name: "looping-coder",
+        name: this.env.GITHUB_NAME || "looping-coder",
         email: this.env.GITHUB_EMAIL
       }
     };

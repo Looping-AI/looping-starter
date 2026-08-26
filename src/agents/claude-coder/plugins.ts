@@ -111,7 +111,10 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       token: () => host.env.GITHUB_TOKEN,
       // Same identity as `coder`'s, deliberately — see the comment on `author`
       // in `src/agents/coder/plugins.ts`.
-      author: { name: "looping-coder", email: host.env.GITHUB_EMAIL },
+      author: {
+        name: host.env.GITHUB_NAME || "looping-coder",
+        email: host.env.GITHUB_EMAIL
+      },
 
       beforeCheckout: ({ owner, repo: repoName }) =>
         active.set(`${owner}/${repoName}`),
