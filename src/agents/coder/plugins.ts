@@ -123,6 +123,14 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Still needed, and now only for `repo_open_pr` — the one credentialed
       // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
+      // Defaults to the generic `looping-coder` identity — see `.env.example`
+      // for `GITHUB_NAME`/`GITHUB_EMAIL` and why. Has to match
+      // `defaultGitIdentity` in `src/workspace/object.ts`, or a commit could be
+      // attributed differently depending on which side made it.
+      author: {
+        name: host.env.GITHUB_NAME || "looping-coder",
+        email: host.env.GITHUB_EMAIL
+      },
 
       // The two hooks that make per-repository workspaces work, and the order
       // between them is the whole design. `beforeCheckout` fires with the parsed

@@ -283,6 +283,10 @@
       // argument, and never enters the container — `onAuth` checks the host
       // allowlist at the moment the token is handed over.
       "GITHUB_TOKEN",
+      // The git identity behind those commits — same requirement as
+      // GITHUB_TOKEN above. See `.env.example` for what each configures.
+      "GITHUB_NAME",
+      "GITHUB_EMAIL",
 
       // claude-coder only, and a credential pool rather than a secret — see
       // `.env.example`, which is where an operator sets them, for how rotation
