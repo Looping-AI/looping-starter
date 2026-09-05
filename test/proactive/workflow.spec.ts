@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { WorkflowStep } from "cloudflare:workers";
 import { TaskState } from "@a2a-js/sdk";
-import type { GatewayIdentity, PlainTask } from "@loopingai/core/a2a";
+import type { GatekeeperIdentity, PlainTask } from "@dynamicagents/core/a2a";
 import { env } from "cloudflare:workers";
 import type { ProactiveAgent } from "@/agents/proactive/agent";
 import { proactive } from "@/agents/proactive/definition";
@@ -17,7 +17,7 @@ import { runNotifyTask } from "@/agents/proactive/workflow";
  * visible in a type or a lint — the only thing that catches them is a spec that
  * puts the DO into the state each check exists for.
  *
- * That drift is why the round loop now lives in `@loopingai/core/round` rather
+ * That drift is why the round loop now lives in `@dynamicagents/core/round` rather
  * than in this repo. This agent keeps its own loop, deliberately — it is the
  * evidence core stopped at the right place — so it keeps these specs too.
  *
@@ -30,7 +30,7 @@ import { runNotifyTask } from "@/agents/proactive/workflow";
  * database actually returns.
  */
 
-const IDENTITY: GatewayIdentity = {
+const IDENTITY: GatekeeperIdentity = {
   key: "custom:test:proactive",
   name: "test-caller",
   kind: "custom",
@@ -110,7 +110,7 @@ function params(taskId: string) {
     contextId: `ctx-${taskId}`,
     // Unreachable on purpose: a spec that posts here has already failed the
     // assertion it cares about.
-    pushUrl: "https://gateway.invalid/push",
+    pushUrl: "https://gatekeeper.invalid/push",
     pushToken: "push-token",
     jku: "https://agent.invalid/.well-known/jwks.json"
   };
@@ -168,7 +168,7 @@ describe("the ordinary path", () => {
   it("completes and notifies when nothing cancels", async () => {
     const { stub } = fakeAgent({ saveTask: true });
     // `notify` is cached too: this asserts the orchestration reaches it, not
-    // that an unreachable gateway answers.
+    // that an unreachable gatekeeper answers.
     const { step, ran } = fakeStep({
       cached: {
         generate: { kind: "reply", text: "here you go" },
@@ -204,7 +204,7 @@ describe("a turn that deliberately says nothing", () => {
       abandonedCopy: ABANDONED_COPY
     });
 
-    // No shortcut to the end: the gateway's pending row has to resolve whether
+    // No shortcut to the end: the gatekeeper's pending row has to resolve whether
     // or not there is anything to say, so this path runs the same four steps.
     expect(ran).toEqual(["working", "generate", "complete", "notify"]);
     expect(saved).toHaveLength(1);
@@ -220,7 +220,7 @@ describe("against the real Durable Object", () => {
     // asserts the verdicts are real — that `AgentDB` actually answers this way
     // once a row is canceled, so the two specs are not agreeing with each other
     // about a database neither of them touched.
-    const identity: GatewayIdentity = {
+    const identity: GatekeeperIdentity = {
       ...IDENTITY,
       key: `custom:test:real:${crypto.randomUUID()}`
     };

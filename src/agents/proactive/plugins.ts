@@ -1,9 +1,9 @@
-import type { AgentPlugin } from "@loopingai/core";
-import { browser } from "@loopingai/plugins/browser";
-import { recall } from "@loopingai/plugins/recall";
-import { triage } from "@loopingai/plugins/triage";
+import type { AgentPlugin } from "@dynamicagents/core";
+import { browser } from "@dynamicagents/plugins/browser";
+import { recall } from "@dynamicagents/plugins/recall";
+import { triage } from "@dynamicagents/plugins/triage";
 import { RECALL, TRIAGE } from "@/config";
-import type { PluginHost } from "@loopingai/core/host";
+import type { PluginHost } from "@dynamicagents/core/host";
 
 /**
  * The one file you edit to add or remove a capability for the proactive agent.

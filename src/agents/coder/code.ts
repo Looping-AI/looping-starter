@@ -1,9 +1,9 @@
-import { definePlugin, type AgentPlugin } from "@loopingai/core";
+import { definePlugin, type AgentPlugin } from "@dynamicagents/core";
 import {
   SANDBOX_FAMILY,
   WORKSPACE_RUNTIME_KEY
-} from "@loopingai/plugins/computer";
-import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
+} from "@dynamicagents/plugins/computer";
+import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
 
 /**
  * The `code` subtask type — a plugin this repo writes rather than installs.
@@ -95,7 +95,7 @@ export function code(config: CodeConfig): AgentPlugin {
      * plugin that **declared** the subtask type, which is this one — so
      * `workspaceName()` resolves here and would throw in the facet. Whatever
      * this returns arrives at every tool family as `ToolFamilyContext.runtime`,
-     * and `@loopingai/plugins/computer` reads the key back out of it with
+     * and `@dynamicagents/plugins/computer` reads the key back out of it with
      * `workspaceNameFromRuntime`.
      *
      * Without this, every delegated `code` subtask fails at its first tool call
@@ -190,7 +190,7 @@ export function code(config: CodeConfig): AgentPlugin {
           // subtask type used to take a `dir` param, which nothing read; a
           // subagent left to guess opened with `find / -maxdepth 3 -iname
           // README.md`, searching the filesystem root for its own repository.
-          "State the checkout directory in the brief — the path `repo_clone` reported, e.g. `/workspace/looping-gateway`. A subagent that is not told where to work will go looking for it.",
+          "State the checkout directory in the brief — the path `repo_clone` reported, e.g. `/workspace/slack-gatekeeper`. A subagent that is not told where to work will go looking for it.",
           "Prefer one well-scoped subtask over several. Subagents share one checkout, so two of them editing the same files conflict rather than parallelise — split only along genuinely independent lines, such as investigating a failure in one module while another area is being read.",
           `Use \`${finalReplyTool}\` when the work is delivered and the pull request is open, or when you have to report honestly that it is not.`
         ].join("\n")

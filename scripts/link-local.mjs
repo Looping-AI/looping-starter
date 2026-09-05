@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Install the sibling `looping-core` / `looping-plugins` checkouts into this
- * repo, for developing across the three at once.
+ * Install the sibling `core` / `plugins` checkouts into this repo, for
+ * developing across the three at once.
  *
  * `npm pack` + tarball install, deliberately — **not `npm link`**, and not a
  * `file:` dependency either:
@@ -36,22 +36,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 /** Checkouts this repo composes. A missing one is an error. */
-const SIBLINGS = ["looping-core", "looping-plugins"];
+const SIBLINGS = ["core", "plugins"];
 
 /**
  * Packed too when present, skipped when not.
  *
- * `looping-a2a-protocol` is the wire contract `@loopingai/core` and
- * looping-gateway both depend on. Nothing here imports it directly and it
+ * `g2a-protocol` is the wire contract `@dynamicagents/core` and
+ * slack-gatekeeper both depend on. Nothing here imports it directly and it
  * changes about once a year, so requiring the checkout would break `link:local`
  * for everyone who only has the two above — but when it *is* checked out, an
  * edit to it must reach this build, or a linked core silently resolves the
  * published copy and the change under test is not the one running.
  */
-const OPTIONAL_SIBLINGS = ["looping-a2a-protocol"];
+const OPTIONAL_SIBLINGS = ["g2a-protocol"];
 
 const root = path.resolve(import.meta.dirname, "..");
-const out = mkdtempSync(path.join(tmpdir(), "looping-pack-"));
+const out = mkdtempSync(path.join(tmpdir(), "da-pack-"));
 const tarballs = [];
 
 for (const name of [...SIBLINGS, ...OPTIONAL_SIBLINGS]) {
@@ -110,7 +110,7 @@ try {
    * Put the lockfile back exactly as it was — even if the install above threw.
    *
    * `--no-save` protects the *manifest*, not the lockfile: npm can still pin
-   * `@loopingai/*` to `file:/var/folders/…/looping-pack-*.tgz`. Those paths do not
+   * `@dynamicagents/*` to `file:/var/folders/…/da-pack-*.tgz`. Those paths do not
    * exist on a CI runner — or on this machine once the temp dir is cleaned — so the
    * damage surfaces as a failed install belonging to whoever pulls next, with no
    * connection to the command that caused it. The README used to ask the developer

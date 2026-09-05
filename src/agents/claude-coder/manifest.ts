@@ -1,4 +1,4 @@
-import type { AgentManifest } from "@loopingai/core/a2a";
+import type { AgentManifest } from "@dynamicagents/core/a2a";
 
 /**
  * The transport-independent half of this agent's AgentCard. `buildBaseCard` adds
@@ -7,7 +7,7 @@ import type { AgentManifest } from "@loopingai/core/a2a";
  * since the well-known path carries the deployment's stub card.
  *
  * Deliberately does **not** name Claude Code or the model behind it. A card is
- * what a gateway operator reads to decide what to route here, and the engine is
+ * what a gatekeeper operator reads to decide what to route here, and the engine is
  * an implementation detail that would go stale the first time it changed. What
  * belongs here is the difference an operator can act on: this one takes larger,
  * self-contained changes and works on one at a time.
@@ -36,7 +36,7 @@ export const manifest: AgentManifest = {
       // Empty means "inherit the card's defaultInput/OutputModes".
       inputModes: [],
       outputModes: [],
-      // Empty means "inherit the card-level requirement" (the gateway JWT).
+      // Empty means "inherit the card-level requirement" (the gatekeeper JWT).
       securityRequirements: []
     },
     {

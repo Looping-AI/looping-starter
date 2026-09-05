@@ -31,7 +31,7 @@ jobs:
 
       # Each agent's module graph carries only the plugins that agent installs,
       # and stays under its size ceiling. The one defence that survives a
-      # refactor: without it the subpath-export discipline in @loopingai/plugins
+      # refactor: without it the subpath-export discipline in @dynamicagents/plugins
       # rots silently the first time someone adds a convenience re-export.
       - run: npm run verify:isolation
 

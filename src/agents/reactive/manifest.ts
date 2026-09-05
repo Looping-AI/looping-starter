@@ -1,4 +1,4 @@
-import type { AgentManifest } from "@loopingai/core/a2a";
+import type { AgentManifest } from "@dynamicagents/core/a2a";
 
 /**
  * The transport-independent half of this agent's AgentCard — everything that does
@@ -14,7 +14,7 @@ import type { AgentManifest } from "@loopingai/core/a2a";
 export const manifest: AgentManifest = {
   name: "Reactive Agent",
   description:
-    "A delegating A2A agent. Verifies the gateway identity JWT, then answers the " +
+    "A delegating A2A agent. Verifies the gatekeeper identity JWT, then answers the " +
     "caller via a Workers-AI round loop — handing work to isolated subagents when " +
     "it helps — with a durable per-caller memory (one continuous, self-compacting " +
     "conversation).",
@@ -36,7 +36,7 @@ export const manifest: AgentManifest = {
       // here is plain text like the agent as a whole.
       inputModes: [],
       outputModes: [],
-      // Empty means "inherit the card-level requirement" (the gateway JWT).
+      // Empty means "inherit the card-level requirement" (the gatekeeper JWT).
       securityRequirements: []
     },
     {

@@ -1,9 +1,9 @@
-# AGENTS.md — working in `looping-starter`
+# AGENTS.md — working in `da-starter`
 
 This is the repo you fork. It composes
-[`@loopingai/core`](https://github.com/Looping-AI/looping-core) (the mandatory
+[`@dynamicagents/core`](https://github.com/dynamicagents/core) (the mandatory
 foundation) and
-[`@loopingai/plugins`](https://github.com/Looping-AI/looping-plugins) (optional
+[`@dynamicagents/plugins`](https://github.com/dynamicagents/plugins) (optional
 capabilities) into a deployable Worker.
 
 The single most useful thing to know: **almost nothing here is framework.** The
@@ -19,14 +19,14 @@ signal it belongs in core instead.
 
 ## Where a thing goes
 
-| You are changing…                         | It goes in                       |
-| ----------------------------------------- | -------------------------------- |
-| what the model is told about a domain     | the plugin that owns that domain |
-| what the agent _is_                       | `src/agents/<tenant>/soul.ts`    |
-| how a round ends, or a user-facing string | `src/round-policy.ts`            |
-| which capabilities an agent has           | `src/agents/<tenant>/plugins.ts` |
-| model ids, budgets, limits                | `src/config.ts`                  |
-| cancellation, retries, idempotency, DAGs  | **`@loopingai/core`** — not here |
+| You are changing…                         | It goes in                           |
+| ----------------------------------------- | ------------------------------------ |
+| what the model is told about a domain     | the plugin that owns that domain     |
+| what the agent _is_                       | `src/agents/<tenant>/soul.ts`        |
+| how a round ends, or a user-facing string | `src/round-policy.ts`                |
+| which capabilities an agent has           | `src/agents/<tenant>/plugins.ts`     |
+| model ids, budgets, limits                | `src/config.ts`                      |
+| cancellation, retries, idempotency, DAGs  | **`@dynamicagents/core`** — not here |
 
 `src/round-policy.ts` and `src/config.ts` sit at the top level because two agents
 share them. An agent importing a _sibling's_ module is what `npm run
@@ -52,7 +52,7 @@ Add-then-remove must return all four files byte-for-byte to where they started.
 That round trip is the test that keeps the script honest; run it if you change the
 script.
 
-**A tenant id is a public identifier.** A gateway registers against it and it rides
+**A tenant id is a public identifier.** A gatekeeper registers against it and it rides
 in a JWT claim, so renaming one is a re-registration, not a refactor.
 
 ---
@@ -62,7 +62,7 @@ in a JWT claim, so renaming one is a re-registration, not a refactor.
 **1. Cancellation is checked by the guarded write, never by a probe.**
 `saveTask` returns whether the write applied, and `markWorking` returns
 `"ok" | "canceled"`. Read those. Calling `getTask` first and acting second reopens
-a window in which a cancel lands and the gateway still gets a `completed`
+a window in which a cancel lands and the gatekeeper still gets a `completed`
 callback — and that is exactly how this repo's proactive agent drifted from its
 sibling. `test/proactive/workflow.spec.ts` pins both.
 
@@ -70,7 +70,7 @@ sibling. `test/proactive/workflow.spec.ts` pins both.
 This Worker deploys as one bundle containing every agent, so grepping `dist/`
 proves nothing. Each agent's entry is bundled alone and esbuild's **metafile** —
 the module list, not a string search — is checked for plugins that agent does not
-install, plus `@loopingai/core/dist/round/` for the agent that does not delegate.
+install, plus `@dynamicagents/core/dist/round/` for the agent that does not delegate.
 
 It has caught two real leaks: a shared base class living in one agent's directory,
 and (after the core split) it is what holds proactive at ~1.5 MiB instead of ~2.5.
@@ -92,7 +92,7 @@ typechecking them — so run `check` before pushing.
 ### Across the three repos
 
 ```bash
-npm run link:local    # npm pack + tarball install from ../looping-core, ../looping-plugins
+npm run link:local    # npm pack + tarball install from ../core, ../plugins
 ```
 
 `npm pack` + tarball, deliberately — **not `npm link`**, which symlinks the checkout

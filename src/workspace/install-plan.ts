@@ -1,7 +1,7 @@
 import {
   DEFAULT_INSTALL_PLAN,
   type InstallPlan
-} from "@loopingai/plugins/computer";
+} from "@dynamicagents/plugins/computer";
 
 /**
  * How **this deployment** installs dependencies — the one file to edit when a
@@ -14,7 +14,7 @@ import {
  * Runs on every checkout and every cold container: `node_modules` lives in the
  * container and dies with it, and the tree looks fine until something imports
  * one. It runs *outside* a round because `npm ci` measured 225 s on
- * looping-gateway, and a chunk step is killed at ten minutes — after which
+ * slack-gatekeeper, and a chunk step is killed at ten minutes — after which
  * Workflows retries the chunk and installs again.
  *
  * Overrides are keyed `owner/repo`, exactly as the clone URL spells it, and
@@ -22,7 +22,7 @@ import {
  *
  * ```ts
  * overrides: {
- *   "Looping-AI/looping-gateway": "npm ci --no-audit --no-fund && npm run build"
+ *   "dynamicagents/slack-gatekeeper": "npm ci --no-audit --no-fund && npm run build"
  * }
  * ```
  *

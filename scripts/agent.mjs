@@ -60,7 +60,7 @@ if (!tenant || !/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(tenant)) {
   die(
     `invalid tenant '${tenant ?? ""}'. A tenant id is lowercase letters, digits ` +
       "and single hyphens between them — no leading, trailing or repeated ones " +
-      "— it is what a gateway registers against, so it appears in a URL and in " +
+      "— it is what a gatekeeper registers against, so it appears in a URL and in " +
       "a JWT claim."
   );
 }
@@ -166,16 +166,16 @@ function edit(file, label, fn) {
 
 const AGENT_TS = (
   isRound
-) => `import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+) => `import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 ${
   isRound
     ? `import {
   RoundAgentBase,
   type RoundPolicy,
   type SubagentClass
-} from "@loopingai/core/round";`
-    : `import { LoopingAgent } from "@loopingai/core/host";`
+} from "@dynamicagents/core/round";`
+    : `import { DynamicAgent } from "@dynamicagents/core/host";`
 }
 import { ${screaming}_CONFIG } from "@/config";
 ${isRound ? 'import { roundPolicy } from "@/round-policy";\n' : ""}import { plugins } from "./plugins";
@@ -186,11 +186,11 @@ ${isRound ? `import { ${pascal}Subagent } from "./subagent";\n` : ""}
  *
  * ${
    isRound
-     ? "A delegating round agent: the loop, the durable Subtask rows and the\n * subagent execution are all `@loopingai/core/round`. What is *this agent* is\n * the five methods below plus `./plugins.ts` and `./soul.ts`."
-     : "A single-turn agent: it extends `LoopingAgent` directly and writes its own\n * loop, so it carries none of the delegation machinery. Add a `converse` method\n * (or whatever your turn is called) and a workflow that drives it."
+     ? "A delegating round agent: the loop, the durable Subtask rows and the\n * subagent execution are all `@dynamicagents/core/round`. What is *this agent* is\n * the five methods below plus `./plugins.ts` and `./soul.ts`."
+     : "A single-turn agent: it extends `DynamicAgent` directly and writes its own\n * loop, so it carries none of the delegation machinery. Add a `converse` method\n * (or whatever your turn is called) and a workflow that drives it."
  }
  */
-export class ${pascal}Agent extends ${isRound ? "RoundAgentBase" : "LoopingAgent"}<Env> {
+export class ${pascal}Agent extends ${isRound ? "RoundAgentBase" : "DynamicAgent"}<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return ${screaming}_CONFIG;
   }
@@ -218,7 +218,7 @@ ${
 }}
 `;
 
-const DEFINITION_TS = `import { defineAgent } from "@loopingai/core/worker";
+const DEFINITION_TS = `import { defineAgent } from "@dynamicagents/core/worker";
 import { manifest } from "./manifest";
 
 /**
@@ -236,9 +236,9 @@ export const ${camel} = defineAgent({
 });
 `;
 
-const SUBAGENT_TS = `import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import { RecipeSubagentHost } from "@loopingai/core/round";
+const SUBAGENT_TS = `import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { RecipeSubagentHost } from "@dynamicagents/core/round";
 import { ${screaming}_CONFIG } from "@/config";
 import { plugins } from "./plugins";
 
@@ -262,8 +262,8 @@ export class ${pascal}Subagent extends RecipeSubagentHost<Env> {
 
 const ROUND_WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { resolveConfig } from "@loopingai/core";
-import { runHandleTask, type HandleTaskParams } from "@loopingai/core/round";
+import { resolveConfig } from "@dynamicagents/core";
+import { runHandleTask, type HandleTaskParams } from "@dynamicagents/core/round";
 import { ${screaming}_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { ${camel} } from "./definition";
@@ -294,13 +294,13 @@ export class ${pascal}Workflow extends WorkflowEntrypoint<Env, HandleTaskParams>
  */
 const SINGLE_WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import type { AcceptedTurn } from "@loopingai/core/a2a";
+import type { AcceptedTurn } from "@dynamicagents/core/a2a";
 
 /**
  * The ${tenant} agent's task workflow.
  *
  * Core ships no single-turn orchestration — compare \`../reactive/workflow.ts\`,
- * which is entirely \`@loopingai/core/round\`. Resolve the agent DO (\`./definition\`
+ * which is entirely \`@dynamicagents/core/round\`. Resolve the agent DO (\`./definition\`
  * exports it), drive whatever turn method \`./agent.ts\` ends up exposing, and
  * persist + notify through the \`markWorking\`/\`saveTask\` RPCs every agent's
  * Durable Object already has. See \`../proactive/workflow.ts\` for a worked
@@ -318,14 +318,14 @@ export class ${pascal}Workflow extends WorkflowEntrypoint<Env, AcceptedTurn> {
 }
 `;
 
-const PLUGINS_TS = `import type { AgentPlugin } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+const PLUGINS_TS = `import type { AgentPlugin } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 
 /**
  * The one file you edit to add or remove a capability for this agent.
  *
  * Delete a line and that module leaves the bundle entirely. Nothing in core
- * imports a plugin, and \`@loopingai/plugins\` has no root barrel — the bare
+ * imports a plugin, and \`@dynamicagents/plugins\` has no root barrel — the bare
  * specifier does not resolve — so the guarantee is structural rather than a
  * tree-shaker's opinion. \`npm run verify:isolation\` asserts it on the built graph.
  *
@@ -364,7 +364,7 @@ export function soulPrompt(capabilities: string): string {
 }
 `;
 
-const MANIFEST_TS = `import type { AgentManifest } from "@loopingai/core/a2a";
+const MANIFEST_TS = `import type { AgentManifest } from "@dynamicagents/core/a2a";
 
 /**
  * The transport-independent half of this agent's AgentCard. \`buildBaseCard\` adds
@@ -374,7 +374,7 @@ const MANIFEST_TS = `import type { AgentManifest } from "@loopingai/core/a2a";
  */
 export const manifest: AgentManifest = {
   name: "${pascal} Agent",
-  description: "TODO: what this agent does, for a gateway operator reading its card.",
+  description: "TODO: what this agent does, for a gatekeeper operator reading its card.",
   version: "0.1.0",
   // \`extensions\` is a required (repeated) protobuf field in v1.0 — we declare no
   // protocol extensions, so it stays empty.
@@ -391,7 +391,7 @@ export const manifest: AgentManifest = {
       // Empty means "inherit the card's defaultInput/OutputModes".
       inputModes: [],
       outputModes: [],
-      // Empty means "inherit the card-level requirement" (the gateway JWT).
+      // Empty means "inherit the card-level requirement" (the gatekeeper JWT).
       securityRequirements: []
     }
   ]
@@ -470,7 +470,7 @@ Next:
   2. Fill in src/agents/${tenant}/{soul,manifest,plugins}.ts
   3. Add this agent's forbidden plugins to scripts/verify-isolation.mjs
   4. npm run types && npm run check && npm test && npm run verify:isolation
-  5. Register it with your gateway: same endpoint, tenant id "${tenant}"`);
+  5. Register it with your gatekeeper: same endpoint, tenant id "${tenant}"`);
 }
 
 // --- remove ----------------------------------------------------------------
@@ -534,7 +534,7 @@ Next:
   1. Drop ${screaming}_CONFIG from src/config.ts, and any secret only this agent needed
   2. npm run types && npm run check && npm test && npm run verify:isolation
 
-The signing key and GATEWAY_ORIGINS stay — they belong to the deployment, not to
+The signing key and GATEKEEPER_ORIGINS stay — they belong to the deployment, not to
 any one agent.`);
 }
 

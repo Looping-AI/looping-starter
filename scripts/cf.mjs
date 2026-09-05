@@ -29,7 +29,7 @@
 // Examples:
 //   npm run cf -- verify
 //   npm run cf -- logs --since 2h --level error
-//   npm run cf -- logs --worker looping-starter --grep HandleTaskWorkflow
+//   npm run cf -- logs --worker da-starter --grep HandleTaskWorkflow
 //   npm run cf -- wf handle-task
 //   npm run cf -- wf handle-task 27to4pc4w7eo0psa59o
 //   npm run cf -- ai --since 2h

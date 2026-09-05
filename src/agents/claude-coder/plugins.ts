@@ -1,10 +1,10 @@
-import { restrictMainAgentTools, type AgentPlugin } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import { claudeCode } from "@loopingai/plugins/claude-code";
-import { computer, computerExec } from "@loopingai/plugins/computer";
-import { repo } from "@loopingai/plugins/repo";
-import { browser } from "@loopingai/plugins/browser";
-import { recall } from "@loopingai/plugins/recall";
+import { restrictMainAgentTools, type AgentPlugin } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { claudeCode } from "@dynamicagents/plugins/claude-code";
+import { computer, computerExec } from "@dynamicagents/plugins/computer";
+import { repo } from "@dynamicagents/plugins/repo";
+import { browser } from "@dynamicagents/plugins/browser";
+import { recall } from "@dynamicagents/plugins/recall";
 import { RECALL } from "@/config";
 import { activeRepo } from "@/workspace/active-repo";
 import { workspaceContainer } from "@/workspace/container";
@@ -28,7 +28,7 @@ import { claudeCodeConfig } from "./claude-code";
  *
  * ## Why there is no `workspace()` here
  *
- * `@loopingai/plugins/workspace` is a virtual filesystem over the *agent's* own
+ * `@dynamicagents/plugins/workspace` is a virtual filesystem over the *agent's* own
  * SQLite. The computer plugin's filesystem is a *different* Durable Object's
  * SQLite, mounted into a container. Installing both would hand the model two
  * unrelated filesystems and no way to tell from a path which one it is
@@ -112,7 +112,7 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Same identity as `coder`'s, deliberately — see the comment on `author`
       // in `src/agents/coder/plugins.ts`.
       author: {
-        name: host.env.GITHUB_NAME || "looping-coder",
+        name: host.env.GITHUB_NAME || "da-coder",
         email: host.env.GITHUB_EMAIL
       },
 
@@ -140,7 +140,7 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       ai: host.env.AI,
       index: host.env.VECTORIZE,
       namespace: host.callerKey,
-      // The host's *resolved* gateway id, so embedding calls are correlated with
+      // The host's *resolved* AI Gateway id, so embedding calls are correlated with
       // chat calls. Spread the rest: enumerating each field silently drops any
       // option the plugin adds later.
       aiGatewayId: host.aiGatewayId,

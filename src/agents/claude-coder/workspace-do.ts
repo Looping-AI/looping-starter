@@ -3,7 +3,7 @@ import {
   type CredentialState,
   type CredentialStore,
   type Lead
-} from "@loopingai/plugins/claude-code";
+} from "@dynamicagents/plugins/claude-code";
 import {
   WorkspaceObjectBase,
   type WorkspaceObjectConfig

@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { FINAL_REPLY_TOOL_NAME } from "@loopingai/core/agent";
-import { DELEGATE_TOOL_NAME } from "@loopingai/core/subtasks";
+import { FINAL_REPLY_TOOL_NAME } from "@dynamicagents/core/agent";
+import { DELEGATE_TOOL_NAME } from "@dynamicagents/core/subtasks";
 import { finalRoundNote, roundContract, roundPolicy } from "@/round-policy";
 
 /**
  * The repo-owned half of the round loop: the words, not the mechanism.
- * `@loopingai/core/round` owns the DAG scheduler and the primary→fallback
+ * `@dynamicagents/core/round` owns the DAG scheduler and the primary→fallback
  * ladder and pins none of this prose, so it is this file's to keep correct.
  */
 

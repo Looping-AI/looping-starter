@@ -1,7 +1,7 @@
-import type { AgentPlugin } from "@loopingai/core";
-import { arcAgi } from "@loopingai/plugins/arc-agi";
-import { workspace } from "@loopingai/plugins/workspace";
-import type { PluginHost } from "@loopingai/core/host";
+import type { AgentPlugin } from "@dynamicagents/core";
+import { arcAgi } from "@dynamicagents/plugins/arc-agi";
+import { workspace } from "@dynamicagents/plugins/workspace";
+import type { PluginHost } from "@dynamicagents/core/host";
 
 /**
  * The arc-player's capabilities. Two lines, and that is the whole example.

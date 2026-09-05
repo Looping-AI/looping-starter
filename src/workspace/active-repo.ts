@@ -1,4 +1,4 @@
-import type { PluginHost } from "@loopingai/core/host";
+import type { PluginHost } from "@dynamicagents/core/host";
 
 /**
  * Which repository this caller is working on, and therefore which workspace

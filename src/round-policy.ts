@@ -1,13 +1,13 @@
-import type { AgentLimits } from "@loopingai/core";
-import { FINAL_REPLY_TOOL_NAME } from "@loopingai/core/agent";
-import { DELEGATE_TOOL_NAME } from "@loopingai/core/subtasks";
-import type { RoundPolicy } from "@loopingai/core/round";
+import type { AgentLimits } from "@dynamicagents/core";
+import { FINAL_REPLY_TOOL_NAME } from "@dynamicagents/core/agent";
+import { DELEGATE_TOOL_NAME } from "@dynamicagents/core/subtasks";
+import type { RoundPolicy } from "@dynamicagents/core/round";
 
 /**
  * The words a round agent says — the one part of the round loop core does not
  * ship.
  *
- * `@loopingai/core/round` owns all the mechanism: the durable Subtask rows and
+ * `@dynamicagents/core/round` owns all the mechanism: the durable Subtask rows and
  * their concurrent fan-out, chunked subagent execution, cancellation ordering,
  * the primary→fallback→repair ladder.
  * It reads none of it out loud. Everything below is text a model or a user

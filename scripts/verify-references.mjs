@@ -36,7 +36,7 @@ const REF =
  * a reference that has simply gone stale.
  */
 const EXTERNAL = new Map([
-  ["src/claude-code/README.md", "lives in @loopingai/plugins"],
+  ["src/claude-code/README.md", "lives in @dynamicagents/plugins"],
   ["src/round/turn.ts", "an illustrative example in subagent prompt copy"],
   ["src/round/turn.spec.ts", "an illustrative example in subagent prompt copy"]
 ]);

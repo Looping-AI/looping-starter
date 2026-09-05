@@ -1,4 +1,4 @@
-import type { AgentManifest } from "@loopingai/core/a2a";
+import type { AgentManifest } from "@dynamicagents/core/a2a";
 
 /**
  * The **stub** card served at `/.well-known/agent-card.json`.
@@ -23,9 +23,9 @@ import type { AgentManifest } from "@loopingai/core/a2a";
  * a client that picked one from here would have no way to act on it.
  */
 export const hostManifest: AgentManifest = {
-  name: "looping-starter",
+  name: "da-starter",
   description:
-    "Hosts several Looping agents behind one A2A endpoint. This card describes " +
+    "Hosts several Dynamic Agents behind one A2A endpoint. This card describes " +
     "the deployment rather than any one agent — call GetExtendedAgentCard with " +
     "a tenant id to fetch an agent's own card. Tenants: `reactive` (delegating " +
     "round loop), `proactive` (decides per message whether to answer), " +

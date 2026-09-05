@@ -29,7 +29,7 @@ export const SOUL: string[] = [
 
   // The advertised `investigate` skill, which the rest of this soul would
   // otherwise contradict outright. A card that offers findings-without-a-PR
-  // while the soul says "finish by opening a pull request" hands a gateway a
+  // while the soul says "finish by opening a pull request" hands a gatekeeper a
   // contract the agent is instructed not to honour — so the exception is stated
   // here rather than left to be inferred from the request.
   "Not every request is a change. When you are asked to investigate, explain, or review — and not to modify anything — the findings *are* the deliverable: report them and stop. No branch, no commit, no pull request for work that changed nothing. Everything below about owning the git history applies to changes, which is most of what you are asked for but not all of it.",

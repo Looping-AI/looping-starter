@@ -1,11 +1,11 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { resolveConfig } from "@loopingai/core";
+import { resolveConfig } from "@dynamicagents/core";
 import {
   runHandleTask,
   type HandleTaskParams,
   type NonRecoverableKind
-} from "@loopingai/core/round";
+} from "@dynamicagents/core/round";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { coder } from "./definition";
@@ -41,7 +41,7 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
     "",
     "  1. The Cloudflare status page, for a Workers AI or AI Gateway incident.",
     "  2. Whether the account still has Workers AI enabled and is not past a billing limit.",
-    "  3. `npm run cf -- ai --since 1h` — the gateway log records what the request actually returned.",
+    "  3. `npm run cf -- ai --since 1h` — the AI Gateway log records what the request actually returned.",
     "",
     "Then send this request again. Nothing was changed in the repository."
   ].join("\n"),
@@ -49,7 +49,7 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
   "gateway-credential": [
     "I could not reach the model: the AI Gateway rejected the request before it got there.",
     "",
-    "That is the gateway's own authentication, not the model's — the model never saw this request. It happens when the gateway has Authenticated Gateway switched on, because the `AI` binding does not send a gateway token.",
+    "That is the AI Gateway's own authentication, not the model's — the model never saw this request. It happens when the AI Gateway has Authenticated Gateway switched on, because the `AI` binding does not send a `cf-aig-authorization` token.",
     "",
     "An operator has two options, and the first is usually right:",
     "",
@@ -67,7 +67,7 @@ const CREDENTIAL_COPY: Record<NonRecoverableKind, string> = {
     "  1. The AI Gateway — if Authenticated Gateway is on for this gateway, turn it off; the `AI` binding does not send a gateway token.",
     "  2. Workers AI itself — check the Cloudflare status page and that the account has Workers AI enabled and is within its limits.",
     "",
-    "The gateway log is the fastest way to tell them apart, because it records the status the request actually came back with:",
+    "The AI Gateway log is the fastest way to tell them apart, because it records the status the request actually came back with:",
     "",
     "    npm run cf -- ai --since 1h",
     "",

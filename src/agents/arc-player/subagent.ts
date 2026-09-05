@@ -1,6 +1,6 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import { RecipeSubagentHost } from "@loopingai/core/round";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { RecipeSubagentHost } from "@dynamicagents/core/round";
 import { ARC_PLAYER_CONFIG } from "@/config";
 import { plugins } from "./plugins";
 

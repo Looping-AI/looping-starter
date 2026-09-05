@@ -1,10 +1,10 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 import {
   RoundAgentBase,
   type RoundPolicy,
   type SubagentClass
-} from "@loopingai/core/round";
+} from "@dynamicagents/core/round";
 import { CLAUDE_CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { activeRepo } from "@/workspace/active-repo";
@@ -20,7 +20,7 @@ const LABEL = "claude-coder";
 /**
  * The claude-coder agent — the coder's sibling, with a different engine.
  *
- * The parent is an ordinary Looping round agent on Workers AI: it clones,
+ * The parent is an ordinary Dynamic Agents round agent on Workers AI: it clones,
  * reviews diffs, commits, pushes and opens pull requests, and it has no shell,
  * no editor and no way to write a file. What is different is one level down.
  * Its subtasks do not run core's tool loop; each is a Claude Code session inside

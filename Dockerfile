@@ -72,7 +72,7 @@ FROM docker.io/debian:stable-slim
 #               `xxd` package on Debian 13, **not** `vim-common` — the two were
 #               split apart, and vim-common alone leaves no `xxd` on PATH
 #               (verified against debian:stable-slim, 13.6).
-# make,      — node-gyp's prerequisites. Nothing in the looping repos compiles
+# make,      — node-gyp's prerequisites. Nothing in the Dynamic Agents repos compiles
 # g++,          today (workerd, esbuild and friends all ship prebuilt binaries),
 # python3       but one transitive dependency that does turns an install into
 #               "gyp ERR! find Python", and that is not a failure the agent can
@@ -80,7 +80,7 @@ FROM docker.io/debian:stable-slim
 #               redeploying this image. ~150 MB to delete a class of dead round.
 # git        — the whole delivery path is clone → commit → push.
 #
-# Node 24, not the reference's 22. Every looping repo pins 24 in `.nvmrc` and
+# Node 24, not the reference's 22. Every Dynamic Agents repo pins 24 in `.nvmrc` and
 # `engines`, and CI runs `setup-node@v6` with 24. An agent that builds and tests
 # on 22 eventually produces "passed in the sandbox, failed in CI", which is the
 # one result a coding agent must never produce.
@@ -151,7 +151,7 @@ RUN if command -v corepack > /dev/null; then \
 # `claude-code-20250219` and `oauth-2025-04-20`, and an unauthenticated
 # `HEAD /api/hello` preflight. A version bump can move any of that, so it is a
 # deliberate act that needs the smoke test re-run — see `src/claude-code/README.md`
-# in `@loopingai/plugins`. Do not bump this to pick up a newer CLI without it.
+# in `@dynamicagents/plugins`. Do not bump this to pick up a newer CLI without it.
 #
 # `--no-fund --no-audit` for the same reason as the ENV block below: a build log
 # nobody reads is still a build log somebody has to scroll.
@@ -186,7 +186,7 @@ RUN node -e "const m=Number(process.versions.node.split('.')[0]); if (m < 24) { 
 # which is a worse failure than an error.
 #
 # HUSKY=0 is the judgement call in this file. An install runs `prepare`, which
-# in this repo family installs git hooks, and looping-gateway's pre-commit hook
+# in this repo family installs git hooks, and slack-gatekeeper's pre-commit hook
 # runs the full `npm run check`. That would turn every `repo_commit` into a
 # multi-minute lint run surfacing as an opaque "commit failed" with the real
 # cause truncated out of the middle of the output. The agent should run

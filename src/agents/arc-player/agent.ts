@@ -1,11 +1,11 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 import {
   RoundAgentBase,
   type RoundPolicy,
   type SubagentClass
-} from "@loopingai/core/round";
-import { makeScorecardStore } from "@loopingai/plugins/arc-agi";
+} from "@dynamicagents/core/round";
+import { makeScorecardStore } from "@dynamicagents/plugins/arc-agi";
 import { ARC_PLAYER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { plugins } from "./plugins";
@@ -17,7 +17,7 @@ import { ArcPlayerSubagent } from "./subagent";
  * different plugin list. Nothing else.
  *
  * This is the example that tests whether the plugin contract is real. It reuses
- * `@loopingai/core/round` **unchanged** and adds a whole domain — a delegable
+ * `@dynamicagents/core/round` **unchanged** and adds a whole domain — a delegable
  * subtask type, a catalogue tool, a scorecard ledger, a leased external session —
  * by naming one plugin in `plugins.ts`. If it had needed a hook, a flag, or a
  * conditional anywhere in the shared code, the contract would be leaking.

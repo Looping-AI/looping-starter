@@ -1,10 +1,10 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 import {
   RoundAgentBase,
   type RoundPolicy,
   type SubagentClass
-} from "@loopingai/core/round";
+} from "@dynamicagents/core/round";
 import { REACTIVE_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { plugins } from "./plugins";
@@ -14,7 +14,7 @@ import { ReactiveSubagent } from "./subagent";
 /**
  * The reactive agent: the flagship. Round loop, delegation, subagent execution.
  *
- * All of which is `@loopingai/core/round`. What is actually *this agent* is the
+ * All of which is `@dynamicagents/core/round`. What is actually *this agent* is the
  * five methods below plus `./plugins.ts` and `./soul.ts` — and
  * `../arc-player/agent.ts` is the same five methods with different answers. If
  * adding a domain to an agent needed more than that, the plugin contract would be
