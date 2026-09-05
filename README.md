@@ -176,14 +176,14 @@ they share an audience. Without it `tenant` would be an unauthenticated field in
 request body, and a token minted for one agent would work against any sibling.
 
 > **This needs a gatekeeper that mints the tenant claim and registers agents with a tenant
-> id** ([slack-gatekeeper#62](https://github.com/dynamicagents/slack-gatekeeper/pull/62)), on
-> the `dynamicagents.dev` claim namespace — `@dynamicagents/g2a-protocol` 0.3.0 moved both
-> claims there from `loopingai.org`. Both are required, and the failure mode when only one
-> lands is silent on the minting side: the gatekeeper writes a tenant claim core never reads,
-> core compares an empty tenant against the one the body addressed, and **every request
-> 401s**. Neither build notices, because each side is internally consistent on its own. The
-> two sides do not interoperate across either change in either direction, so they deploy
-> together and registered agents are re-registered.
+> id** ([slack-gatekeeper#62](https://github.com/dynamicagents/slack-gatekeeper/pull/62)).
+> Both sides take the claim names from `@dynamicagents/g2a-protocol` rather than spelling
+> them out, and that package exists for exactly this reason: when the two disagree the
+> failure is silent. The gatekeeper writes a tenant claim core never reads, core compares an
+> empty tenant against the one the body addressed, and **every request 401s** — with neither
+> build noticing, because each side is internally consistent on its own. So the two do not
+> interoperate across a change to either, and they deploy together with registered agents
+> re-registered.
 
 ---
 
