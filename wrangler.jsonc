@@ -17,6 +17,21 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
+  // The deployment's public origin, and the only one.
+  //
+  // Declared here rather than attached in the dashboard because a deploy that
+  // does not own its own hostname is a deploy that can silently land nowhere:
+  // rename the Worker and the domain keeps serving the script it was attached
+  // to, so the new one is live, healthy, and reachable by nobody.
+  //
+  // `workers_dev` is off, and that is a correctness constraint rather than
+  // tidiness. Core derives the card's interface URL, its `jku` and the token
+  // audience it verifies from `new URL(request.url).origin` — see
+  // `src/index.ts`. A second origin therefore advertises a second audience, and
+  // a gatekeeper token minted for this one does not verify against it. It could
+  // only ever serve a card nobody can call.
+  "workers_dev": false,
+  "routes": [{ "pattern": "agents.loopingai.org", "custom_domain": true }],
   // Headroom for git, which now runs here rather than in the container.
   //
   // `@cloudflare/computer/git` is isomorphic-git: SHA-1 and inflate in
