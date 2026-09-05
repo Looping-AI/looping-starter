@@ -1,7 +1,10 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { resolveConfig } from "@loopingai/core";
-import { runHandleTask, type HandleTaskParams } from "@loopingai/core/round";
+import { resolveConfig } from "@dynamicagents/core";
+import {
+  runHandleTask,
+  type HandleTaskParams
+} from "@dynamicagents/core/round";
 import { REACTIVE_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { reactive } from "./definition";

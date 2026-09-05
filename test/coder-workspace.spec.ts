@@ -1,9 +1,9 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
-import { makeDoHelpers } from "@loopingai/core/testing";
+import { makeDoHelpers } from "@dynamicagents/core/testing";
 import { getWorkspace } from "@cloudflare/computer";
-import type { InstallState } from "@loopingai/plugins/computer";
+import type { InstallState } from "@dynamicagents/plugins/computer";
 import { INSTALL_PLAN } from "@/workspace/install-plan";
 import { TRUST_CA_COMMAND } from "@/workspace/object";
 
@@ -20,7 +20,7 @@ import { TRUST_CA_COMMAND } from "@/workspace/object";
  * watchdog armed; every `sb_exec` for the next half hour polled the gate, waited
  * ninety seconds and ran nothing, until the chunk hit the ten-minute step
  * timeout and Workflows retried it into the same wall. The task never reached a
- * terminal state and the gateway never got its callback.
+ * terminal state and the gatekeeper never got its callback.
  *
  * Both tests below run **without a container**, which is not a limitation here
  * but the point: the pool cannot start one, so `runtime.exec` fails exactly the

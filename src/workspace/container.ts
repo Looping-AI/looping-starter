@@ -1,5 +1,5 @@
-import { MAX_TOOL_CALL_MS } from "@loopingai/core";
-import type { ComputerConfig } from "@loopingai/plugins/computer";
+import { MAX_TOOL_CALL_MS } from "@dynamicagents/core";
+import type { ComputerConfig } from "@dynamicagents/plugins/computer";
 import type { WorkspaceObjectBase } from "./object";
 import { WORKSPACE_DIR } from "./object";
 

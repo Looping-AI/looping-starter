@@ -1,15 +1,15 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { CHUNK_STEP } from "@loopingai/core";
+import { CHUNK_STEP } from "@dynamicagents/core";
 import {
   buildCompletedTask,
   buildFailedTask,
   buildNoReplyCompletedTask,
   deliverAbandonedTask,
   deliverTerminalTask,
-  type GatewayIdentity,
+  type GatekeeperIdentity,
   type TurnPushContext
-} from "@loopingai/core/a2a";
+} from "@dynamicagents/core/a2a";
 import type { ProactiveAgent } from "./agent";
 import { proactive } from "./definition";
 
@@ -25,7 +25,7 @@ import { proactive } from "./definition";
  * independently-retried steps that survive isolate eviction, so a generation that
  * outlives the request still calls back.
  *
- * Idempotency: the instance id is derived from the gateway's `messageId`
+ * Idempotency: the instance id is derived from the gatekeeper's `messageId`
  * (deterministic across dispatch retries), so a re-dispatch never starts a second
  * run — `converse` executes exactly once.
  */
@@ -35,7 +35,7 @@ import { proactive } from "./definition";
  * Its own string, and deliberately **not** `roundPolicy.copy.taskFailed`.
  * `round-policy.ts` says in its own docblock that it belongs to the two round
  * agents, and it value-imports `DELEGATE_TOOL_NAME` from
- * `@loopingai/core/subtasks` — so reaching for it here pulled the whole
+ * `@dynamicagents/core/subtasks` — so reaching for it here pulled the whole
  * delegation machinery into an agent that answers in one turn and pushed this
  * bundle 337 KiB over its ceiling. `npm run verify:isolation` caught it, which
  * is exactly what that ceiling is for.
@@ -47,17 +47,17 @@ const ABANDONED_COPY =
   "this task id.";
 
 export interface NotifyTaskParams {
-  /** The accepted task id (echoed back to the gateway on the callback). */
+  /** The accepted task id (echoed back to the gatekeeper on the callback). */
   taskId: string;
   /** The user turn text to answer. */
   text: string;
-  /** The verified calling gateway-agent identity (keys the DO + the Session). */
-  identity: GatewayIdentity;
+  /** The verified calling gatekeeper-agent identity (keys the DO + the Session). */
+  identity: GatekeeperIdentity;
   /** A2A context id, echoed on the completed Task. */
   contextId: string;
-  /** Gateway push-notification webhook (also the callback JWT `aud`). */
+  /** Gatekeeper push-notification webhook (also the callback JWT `aud`). */
   pushUrl: string;
-  /** Per-task validation token the gateway set; echoed in the callback header. */
+  /** Per-task validation token the gatekeeper set; echoed in the callback header. */
   pushToken: string;
   /** This agent's card-signing JWKS URL — the callback JWT `jku` (pinned key). */
   jku: string;
@@ -76,7 +76,7 @@ export interface NotifyTaskParams {
 export interface NotifyTaskDeps {
   /** Route to the agent DO for the verified caller. */
   resolveAgent: (
-    identity: GatewayIdentity
+    identity: GatekeeperIdentity
   ) => DurableObjectStub<ProactiveAgent>;
   /** The deployment's Ed25519 private JWK, for the terminal callback. */
   signingKey: string;
@@ -186,9 +186,9 @@ async function generateAndDeliver(
   });
 
   // Three terminal shapes. A no-reply turn still completes and still calls back —
-  // the gateway's pending row must resolve either way — it just carries no
+  // the gatekeeper's pending row must resolve either way — it just carries no
   // message to post. A failed turn must call back as `failed`: A2A v1.0 has no
-  // structured task error, so the terminal state is the only signal the gateway
+  // structured task error, so the terminal state is the only signal the gatekeeper
   // has that the turn broke.
   //
   // The persist-then-notify pair is core's, and the guarded write inside it is
@@ -197,7 +197,7 @@ async function generateAndDeliver(
   await deliverTerminalTask(step, {
     push,
     // One key per deployment: the card sits at a well-known URI, which RFC 8615
-    // defines per-authority, so this origin publishes one card and the gateway
+    // defines per-authority, so this origin publishes one card and the gatekeeper
     // pins one key for every agent on it.
     signingKey: deps.signingKey,
     saveTask: (task) => agent().saveTask(task),

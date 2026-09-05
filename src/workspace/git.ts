@@ -1,4 +1,4 @@
-import type { RepoGit, RepoGitResult } from "@loopingai/plugins/repo";
+import type { RepoGit, RepoGitResult } from "@dynamicagents/plugins/repo";
 import type { WorkspaceObjectBase } from "./object";
 
 /**

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { makeDoHelpers } from "@loopingai/core/testing";
+import { makeDoHelpers } from "@dynamicagents/core/testing";
 
 /**
  * The credentialed git operations, and the one thing about them that can be

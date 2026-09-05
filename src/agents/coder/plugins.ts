@@ -1,8 +1,8 @@
-import { restrictMainAgentTools, type AgentPlugin } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import { computer, computerExec } from "@loopingai/plugins/computer";
-import { repo } from "@loopingai/plugins/repo";
-import { browser } from "@loopingai/plugins/browser";
+import { restrictMainAgentTools, type AgentPlugin } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { computer, computerExec } from "@dynamicagents/plugins/computer";
+import { repo } from "@dynamicagents/plugins/repo";
+import { browser } from "@dynamicagents/plugins/browser";
 import { activeRepo } from "@/workspace/active-repo";
 import { workspaceContainer } from "@/workspace/container";
 import { workspaceGit } from "@/workspace/git";
@@ -13,7 +13,7 @@ import { code } from "./code";
  * The one file you edit to add or remove a capability for this agent.
  *
  * Delete a line and that module leaves the bundle entirely. Nothing in core
- * imports a plugin, and `@loopingai/plugins` has no root barrel — the bare
+ * imports a plugin, and `@dynamicagents/plugins` has no root barrel — the bare
  * specifier does not resolve — so the guarantee is structural rather than a
  * tree-shaker's opinion. `npm run verify:isolation` asserts it on the built graph.
  *
@@ -30,7 +30,7 @@ import { code } from "./code";
  *
  * ## Why there is no `workspace()` here
  *
- * `@loopingai/plugins/workspace` is a virtual filesystem over this Durable
+ * `@dynamicagents/plugins/workspace` is a virtual filesystem over this Durable
  * Object's own SQLite; the computer plugin's is a *different* object's SQLite,
  * mounted into a container. Installing both would hand the model two unrelated
  * filesystems and no way to tell from a path which one it is addressing. This
@@ -123,12 +123,12 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Still needed, and now only for `repo_open_pr` — the one credentialed
       // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
-      // Defaults to the generic `looping-coder` identity — see `.env.example`
+      // Defaults to the generic `da-coder` identity — see `.env.example`
       // for `GITHUB_NAME`/`GITHUB_EMAIL` and why. Has to match
       // `defaultGitIdentity` in `src/workspace/object.ts`, or a commit could be
       // attributed differently depending on which side made it.
       author: {
-        name: host.env.GITHUB_NAME || "looping-coder",
+        name: host.env.GITHUB_NAME || "da-coder",
         email: host.env.GITHUB_EMAIL
       },
 

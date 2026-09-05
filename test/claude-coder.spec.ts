@@ -1,17 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { createAgentRuntime } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import type { RecipeExecutionRequest } from "@loopingai/core/subtasks";
-import { makeDoHelpers } from "@loopingai/core/testing";
+import { createAgentRuntime } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import type { RecipeExecutionRequest } from "@dynamicagents/core/subtasks";
+import { makeDoHelpers } from "@dynamicagents/core/testing";
 import {
   CLAUDE_CODE_TYPE,
   WORKSPACE_RUNTIME_KEY
-} from "@loopingai/plugins/claude-code";
-import { SANDBOX_FAMILY } from "@loopingai/plugins/computer";
-import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
-import { REPO_FAMILY } from "@loopingai/plugins/repo";
+} from "@dynamicagents/plugins/claude-code";
+import { SANDBOX_FAMILY } from "@dynamicagents/plugins/computer";
+import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
+import { REPO_FAMILY } from "@dynamicagents/plugins/repo";
 import { parentPlugins, subagentPlugins } from "@/agents/claude-coder/plugins";
 import {
   sessionBrief,
@@ -24,7 +24,7 @@ import { CLAUDE_CODER_CONFIG, CLAUDE_CODE_SESSION } from "@/config";
 /**
  * The claude-coder's wiring, pinned.
  *
- * The division of labour between this file and `@loopingai/plugins` is worth
+ * The division of labour between this file and `@dynamicagents/plugins` is worth
  * stating, because it is what keeps both suites small. The *machine* — the
  * drain, the cursor, the credential pool, the rotation — is specified in the
  * package, against fakes, with no container in sight. What is asserted here is
@@ -246,7 +246,7 @@ describe("executeChunk refuses to guess", () => {
  * The pre-flight, and why it is worth an RPC.
  *
  * An invocation carries an 18.7-27k-token cached prefix before it does
- * anything, so starting a session the gateway will refuse pays a container start
+ * anything, so starting a session the egress gateway will refuse pays a container start
  * and that prefix to learn what this answers for free — and reports it as a
  * failed run rather than as a limit with a time on it.
  */

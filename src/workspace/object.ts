@@ -2,10 +2,10 @@ import { DurableObject, tracing } from "cloudflare:workers";
 // One Durable Object has one alarm, and this object wakes for five different
 // reasons. `WakeMap` is the multiplexer; what it does *not* own is what this
 // object owes on waking, which is `#dispatch` below.
-import { WakeMap, type WakeIntent } from "@loopingai/core/alarm";
+import { WakeMap, type WakeIntent } from "@dynamicagents/core/alarm";
 // The sibling barrel: `WakeMap` owns *when* this object wakes, `JobLifecycle`
 // owns what the install owes on waking.
-import { JobLifecycle, type JobContext } from "@loopingai/core/job";
+import { JobLifecycle, type JobContext } from "@dynamicagents/core/job";
 import {
   Workspace,
   type DurableObjectStorageLike,
@@ -36,11 +36,11 @@ import {
   type InstallProbe,
   type InstallState,
   type WorkspaceAdvisory
-} from "@loopingai/plugins/computer";
+} from "@dynamicagents/plugins/computer";
 // The shape `/repo` already defines for exactly this: a git failure is data,
 // because it means git answered. A throw on this path means the object was
 // unreachable, which is a different thing and must stay distinguishable.
-import type { RepoGitResult } from "@loopingai/plugins/repo";
+import type { RepoGitResult } from "@dynamicagents/plugins/repo";
 
 /**
  * A workspace: one Durable Object, one container, one repository.
@@ -170,7 +170,7 @@ const IDLE_RECLAIM = "idle-reclaim";
  *
  * A Durable Object is **never** reclaimed by the platform, and a namespace
  * cannot be enumerated from a Worker, so nothing else is coming to clean up.
- * Source-only workspaces are small (6.3 MB for looping-gateway), which makes
+ * Source-only workspaces are small (6.3 MB for slack-gatekeeper), which makes
  * this hygiene rather than cost control — but unbounded hygiene is still
  * unbounded.
  */
@@ -329,7 +329,7 @@ export interface WorkspaceObjectConfig {
    * `direct` is the plain behaviour: the container's own network position.
    * `http-gateway` routes **everything** through a `Fetcher` this Worker
    * supplies, which is what puts the Worker on the model path — see
-   * `@loopingai/plugins/claude-code`.
+   * `@dynamicagents/plugins/claude-code`.
    *
    * **Required in practice, and its absence is silent.** `@cloudflare/computer`
    * 0.2.0 made this a policy defaulting to `{ mode: "none" }`, and the backend
@@ -570,7 +570,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       // `author` in each agent's `plugins.ts`), so a commit cannot be
       // attributed differently depending on which side made it.
       defaultGitIdentity: {
-        name: this.env.GITHUB_NAME || "looping-coder",
+        name: this.env.GITHUB_NAME || "da-coder",
         email: this.env.GITHUB_EMAIL
       }
     };
@@ -1080,7 +1080,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    *
    * Called from `repo_clone` through the repo plugin's `afterCheckout` hook, so
    * it runs inside a model turn and must not block on the install — 225 seconds
-   * for looping-gateway, against a chunk step that dies at ten minutes.
+   * for slack-gatekeeper, against a chunk step that dies at ten minutes.
    *
    * That caller is a model turn, which lives long enough to hold the drain handed
    * to `ctx.waitUntil` below. **A short-lived caller cannot**, which is why the

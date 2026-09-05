@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { tool } from "ai";
 import { z } from "zod";
-import { FakeSession, mockModel } from "@loopingai/core/testing";
-import { sessionMessage, type ModelPair } from "@loopingai/core/agent";
-import { noReplyTool, NO_REPLY_TOOL_NAME } from "@loopingai/plugins/triage";
+import { FakeSession, mockModel } from "@dynamicagents/core/testing";
+import { sessionMessage, type ModelPair } from "@dynamicagents/core/agent";
+import { noReplyTool, NO_REPLY_TOOL_NAME } from "@dynamicagents/plugins/triage";
 import {
   runTurn,
   TRANSIENT_REPLY,
@@ -138,7 +138,7 @@ describe("declining late, via the no_reply tool", () => {
 describe("failure handling", () => {
   it("reports an unexpected failure as `failed`, not as a reply", async () => {
     // The distinction is load-bearing: A2A v1.0 carries no structured task
-    // error, so the terminal state is the only way to tell the gateway the turn
+    // error, so the terminal state is the only way to tell the gatekeeper the turn
     // broke rather than answered.
     const exploding = {
       primary: () => {

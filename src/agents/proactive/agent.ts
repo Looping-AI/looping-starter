@@ -1,8 +1,11 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { GatewayIdentity, TurnPushContext } from "@loopingai/core/a2a";
-import { LoopingAgent, type PluginHost } from "@loopingai/core/host";
-import { sessionMessage } from "@loopingai/core/agent";
-import { noReplyTool, NO_REPLY_TOOL_NAME } from "@loopingai/plugins/triage";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type {
+  GatekeeperIdentity,
+  TurnPushContext
+} from "@dynamicagents/core/a2a";
+import { DynamicAgent, type PluginHost } from "@dynamicagents/core/host";
+import { sessionMessage } from "@dynamicagents/core/agent";
+import { noReplyTool, NO_REPLY_TOOL_NAME } from "@dynamicagents/plugins/triage";
 import { MAX_STEPS, PROACTIVE_CONFIG } from "@/config";
 import { soulPrompt } from "./soul";
 import { plugins } from "./plugins";
@@ -21,11 +24,11 @@ const UNEXPECTED_REPLY =
  * It is the **second consumer**, and the evidence that core stopped at the right
  * place. Everything it shares with the round agents — the runtime built once per
  * instance, `AgentDB` over plugin stores, the session with its displacement
- * fan-out, the model pair, the task lifecycle — is `LoopingAgent`, and it is
+ * fan-out, the model pair, the task lifecycle — is `DynamicAgent`, and it is
  * shared because two genuinely different agents both needed it, not because one
  * happened to be written that way.
  *
- * Everything it does *not* share is the evidence: no `@loopingai/core/round` at
+ * Everything it does *not* share is the evidence: no `@dynamicagents/core/round` at
  * all. No Workflow round loop, no subagent facet, no delegation, no round budget,
  * and a turn that is allowed to end in silence. `npm run verify:isolation` asserts
  * that absence on the built module graph — this agent's bundle must not contain
@@ -35,7 +38,7 @@ const UNEXPECTED_REPLY =
  * `stub.converse(...)` — not HTTP: the DO is a private implementation detail of
  * the Worker, never exposed over the network.
  */
-export class ProactiveAgent extends LoopingAgent<Env> {
+export class ProactiveAgent extends DynamicAgent<Env> {
   protected agentConfig(): CoreConfigOverrides {
     return PROACTIVE_CONFIG;
   }
@@ -75,7 +78,7 @@ export class ProactiveAgent extends LoopingAgent<Env> {
    */
   async converse(
     text: string,
-    identity: GatewayIdentity,
+    identity: GatekeeperIdentity,
     push?: TurnPushContext
   ): Promise<TurnOutcome> {
     const session = this.getSession(identity);

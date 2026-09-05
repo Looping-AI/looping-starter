@@ -1,5 +1,5 @@
-import type { PluginHost } from "@loopingai/core/host";
-import { computerExec } from "@loopingai/plugins/computer";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { computerExec } from "@dynamicagents/plugins/computer";
 import { activeRepo } from "./active-repo";
 import { workspaceContainer } from "./container";
 import {

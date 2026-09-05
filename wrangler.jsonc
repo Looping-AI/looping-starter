@@ -13,7 +13,7 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "looping-starter",
+  "name": "da-starter",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
@@ -133,7 +133,7 @@
   // the lockfile in a few minutes, which is exactly what a snapshot was ever
   // worth. See `src/workspace/install-plan.ts`.
 
-  // `@loopingai/plugins/browser` — used by reactive and arc-player.
+  // `@dynamicagents/plugins/browser` — used by reactive and arc-player.
   // NOTE: requires a PAID Workers plan; Browser Rendering is not on the free
   // tier. `remote: true` is required for Quick Actions under `wrangler dev`.
   "browser": {
@@ -141,14 +141,14 @@
     "remote": true
   },
 
-  // `@loopingai/plugins/recall` — used by reactive and proactive. Must be a
+  // `@dynamicagents/plugins/recall` — used by reactive and proactive. Must be a
   // 1024-dim cosine index to match the `@cf/baai/bge-m3` embedding model.
   // Vectorize has no local mode, so tests inject a fake index.
-  //   wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=cosine
+  //   wrangler vectorize create da-starter-recall --dimensions=1024 --metric=cosine
   "vectorize": [
     {
       "binding": "VECTORIZE",
-      "index_name": "looping-starter-recall",
+      "index_name": "da-starter-recall",
       "remote": true
     }
   ],
@@ -229,7 +229,7 @@
   ],
 
   // Async A2A (accept + notify): the Worker accepts a turn synchronously and
-  // hands generation plus the gateway push-notification callback to a durable
+  // hands generation plus the gatekeeper push-notification callback to a durable
   // Workflow. Reactive and arc-player run the same round loop over different
   // souls and plugins, so they share one workflow body behind two entrypoints.
   "workflows": [
@@ -275,7 +275,7 @@
   "secrets": {
     "required": [
       "A2A_SIGNING_KEY",
-      "GATEWAY_ORIGINS",
+      "GATEKEEPER_ORIGINS",
       "ARC_API_KEY",
       // Both coders. `GITHUB_TOKEN` needs contents and pull-request write.
       //

@@ -6,11 +6,11 @@ import { env } from "cloudflare:workers";
 import { AGENT_CARD_PATH, A2A_PROTOCOL_VERSION } from "@a2a-js/sdk";
 import {
   AGENT_ORIGIN,
-  GATEWAY_ORIGIN,
+  GATEKEEPER_ORIGIN,
   TEST_AGENT_PRIVATE_JWK,
-  gatewayPublicJwks,
-  makeGatewayToken
-} from "@loopingai/core/testing";
+  gatekeeperPublicJwks,
+  makeGatekeeperToken
+} from "@dynamicagents/core/testing";
 import worker from "@/index";
 
 /**
@@ -62,11 +62,11 @@ const getExtendedCard = (tenant: string) => ({
 });
 
 /**
- * A gateway token authorizing one tenant at this deployment's endpoint — with a
- * real caller identity, as a gateway always mints.
+ * A gatekeeper token authorizing one tenant at this deployment's endpoint — with a
+ * real caller identity, as a gatekeeper always mints.
  */
 const tokenFor = (tenant: string) =>
-  makeGatewayToken({ audience: `${AGENT_ORIGIN}/a2a`, tenant });
+  makeGatekeeperToken({ audience: `${AGENT_ORIGIN}/a2a`, tenant });
 
 /**
  * The same, minus the caller `key`. Used only where a spec wants the call to
@@ -74,19 +74,19 @@ const tokenFor = (tenant: string) =>
  * rejected one never reaches the identity check.
  */
 const keylessTokenFor = (tenant: string) =>
-  makeGatewayToken({
+  makeGatekeeperToken({
     audience: `${AGENT_ORIGIN}/a2a`,
     tenant,
     identity: { name: "anonymous" }
   });
 
 beforeAll(() => {
-  // The gateway's public JWKS, so a token can actually be verified. Everything
+  // The gatekeeper's public JWKS, so a token can actually be verified. Everything
   // else is refused before it reaches the network.
   vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : String(input);
-    if (url === `${GATEWAY_ORIGIN}/.well-known/jwks.json`) {
-      return new Response(gatewayPublicJwks(), {
+    if (url === `${GATEKEEPER_ORIGIN}/.well-known/jwks.json`) {
+      return new Response(gatekeeperPublicJwks(), {
         headers: { "content-type": "application/json" }
       });
     }
@@ -100,7 +100,7 @@ describe("discovery", () => {
   it("serves one signed stub card at the well-known path", async () => {
     // One card per origin, because a well-known URI is per-authority (RFC 8615)
     // and A2A registered this path with IANA. Serving an agent's card here would
-    // make that agent the one every gateway pinned, for all of them.
+    // make that agent the one every gatekeeper pinned, for all of them.
     const res = await get(`/${AGENT_CARD_PATH}`);
     expect(res.status).toBe(200);
 
@@ -112,7 +112,7 @@ describe("discovery", () => {
     }>();
 
     // It describes the deployment, not an agent, and names no tenant.
-    expect(card.name).toBe("looping-starter");
+    expect(card.name).toBe("da-starter");
     expect(card.supportedInterfaces[0].tenant ?? "").toBe("");
     expect(card.supportedInterfaces[0].url).toBe(`${AGENT_ORIGIN}/a2a`);
     // …and advertises the only route to a real agent's card.
@@ -144,7 +144,7 @@ describe("discovery", () => {
 
 describe("per-tenant cards", () => {
   it.each(TENANTS)("returns %s its own signed card", async (tenant) => {
-    // The only way to get an agent's card, and what a gateway registers from.
+    // The only way to get an agent's card, and what a gatekeeper registers from.
     const res = await rpc(getExtendedCard(tenant), {
       authorization: `Bearer ${await tokenFor(tenant)}`
     });
@@ -160,7 +160,7 @@ describe("per-tenant cards", () => {
     // Every tenant answers on the one endpoint — that is what tenant is for.
     expect(body.result.supportedInterfaces[0].url).toBe(`${AGENT_ORIGIN}/a2a`);
 
-    // Signed by the deployment's single key, which the gateway pinned from the
+    // Signed by the deployment's single key, which the gatekeeper pinned from the
     // stub card. A different key here would fail verification at registration.
     const header = JSON.parse(
       atob(
@@ -182,15 +182,15 @@ describe("per-tenant cards", () => {
       })
     );
     // One identity per agent. Sharing one would make them indistinguishable to
-    // a gateway registering them. Counted off `TENANTS` rather than a literal,
+    // a gatekeeper registering them. Counted off `TENANTS` rather than a literal,
     // which is what went stale when the fourth agent arrived.
     expect(new Set(names).size).toBe(TENANTS.length);
   });
 });
 
 describe("tenant isolation", () => {
-  it("accepts a token minted the way the real gateway mints one", async () => {
-    // looping-gateway signs `aud` as the registered endpoint and carries the
+  it("accepts a token minted the way the real gatekeeper mints one", async () => {
+    // slack-gatekeeper signs `aud` as the registered endpoint and carries the
     // registered tenant as a claim. Both have to line up.
     for (const tenant of TENANTS) {
       const res = await rpc(sendMessage(tenant), {
@@ -216,7 +216,7 @@ describe("tenant isolation", () => {
   });
 
   it("refuses a token carrying no tenant claim", async () => {
-    // A gateway too old to scope its tokens. Treating this as a wildcard would
+    // A gatekeeper too old to scope its tokens. Treating this as a wildcard would
     // reopen the replay above for every such caller.
     const res = await rpc(sendMessage("reactive"), {
       authorization: `Bearer ${await tokenFor("")}`

@@ -15,7 +15,7 @@
  * into the graph — not on string matching. A string search answers "does this
  * word appear", which a comment or a coincidence can satisfy; the metafile
  * answers "did this module get pulled in", which is the actual question. A single
- * convenience re-export added to `@loopingai/plugins` six months from now would
+ * convenience re-export added to `@dynamicagents/plugins` six months from now would
  * silently defeat a grep and cannot defeat this.
  *
  * It also enforces a **size ceiling** per agent. Not for its own sake: bundle
@@ -29,9 +29,9 @@ import { builtinModules } from "node:module";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const plugin = (name) => `@loopingai/plugins/dist/${name}/`;
+const plugin = (name) => `@dynamicagents/plugins/dist/${name}/`;
 /** A core subpath. `/round` is the delegation engine — opt-in, and its own graph. */
-const core = (name) => `@loopingai/core/dist/${name}/`;
+const core = (name) => `@dynamicagents/core/dist/${name}/`;
 
 /**
  * One agent, its entry points, and what must not be in its graph.
@@ -72,7 +72,7 @@ const AGENTS = [
     // needs a durable file store — and `@cloudflare/shell` is a real dependency
     // to carry for nothing.
     //
-    // And no `@loopingai/core/round`. That is the strongest assertion here: core
+    // And no `@dynamicagents/core/round`. That is the strongest assertion here: core
     // ships the whole delegating loop — DAG scheduler, chunked subagent
     // execution, the repair ladder — behind an opt-in subpath, and an agent that
     // answers in one turn must not pay a byte for it. If this ever fails, the
@@ -310,7 +310,7 @@ function fmt(n) {
 if (leakFailed) {
   console.error(
     "\nA plugin reached an agent that does not install it. Nothing in core " +
-      "imports a plugin and `@loopingai/plugins` has no root barrel, so this is " +
+      "imports a plugin and `@dynamicagents/plugins` has no root barrel, so this is " +
       "almost always one agent importing another agent's module — follow the " +
       "`via` lines. Anything genuinely shared by two agents belongs in " +
       "src/workspace/, src/config.ts or src/round-policy.ts, never in a sibling's directory."

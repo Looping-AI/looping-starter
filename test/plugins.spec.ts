@@ -7,9 +7,9 @@ import {
   RuntimeSetupError,
   validateRecipe,
   type AgentPlugin
-} from "@loopingai/core";
-import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
-import { WORKSPACE_FAMILY } from "@loopingai/plugins/workspace";
+} from "@dynamicagents/core";
+import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
+import { WORKSPACE_FAMILY } from "@dynamicagents/plugins/workspace";
 import { general } from "@/agents/reactive/general";
 import { REACTIVE_CONFIG } from "@/config";
 
@@ -72,7 +72,7 @@ describe("contract skew between the three repos", () => {
    * it, it is a sentence naming the plugin and both versions, at DO start.
    *
    * Asserted as a unit test rather than by installing a deliberately mismatched
-   * `@loopingai/core`, which would need a published bad version to exist.
+   * `@dynamicagents/core`, which would need a published bad version to exist.
    */
   it("refuses a plugin built against a different contract version", () => {
     const stale: AgentPlugin = {

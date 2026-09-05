@@ -14,18 +14,18 @@ import {
   type ModelPair,
   type OnContent,
   type SessionLike
-} from "@loopingai/core/agent";
+} from "@dynamicagents/core/agent";
 import {
   isNoReplyTurn,
   NO_REPLY_GUIDANCE,
   NO_REPLY_TOOL_NAME
-} from "@loopingai/plugins/triage";
+} from "@dynamicagents/plugins/triage";
 
 /**
  * The proactive agent's turn: **one** inference over the caller's continuous
  * Session that either answers or deliberately says nothing.
  *
- * This file exists to be different from `runTurn` in `@loopingai/core/round`,
+ * This file exists to be different from `runTurn` in `@dynamicagents/core/round`,
  * and the difference is the argument for the whole package split. Both run on the same core — the
  * same Session, the same model pair with its fallback, the same transient-error
  * classification, the same intermediate-content streaming. Nothing about how they
@@ -45,7 +45,7 @@ import {
  * ## Where triage went
  *
  * The predecessor called `shouldReply(...)` right here, inline, after appending
- * the user message. It is now `@loopingai/plugins/triage` declaring
+ * the user message. It is now `@dynamicagents/plugins/triage` declaring
  * `shouldHandleTurn`, and the **DO** consults every installed gate through
  * `runtime.shouldHandleTurn({ history })` before this function is ever called. So
  * the fast path — the channel noise the agent is not part of — never reaches the
@@ -71,7 +71,7 @@ export const TRANSIENT_REPLY =
  *                distinction from `reply` is load-bearing: it is what makes the
  *                workflow POST a `failed` Task, and A2A v1.0 carries no
  *                structured task error, so the terminal state is the only way to
- *                tell the gateway this turn broke.
+ *                tell the gatekeeper this turn broke.
  */
 export type TurnOutcome =
   | { kind: "reply"; text: string }
@@ -178,7 +178,7 @@ export async function runTurn(args: RunTurnArgs): Promise<TurnOutcome> {
     // One attempt against one model. Built per call rather than shared so each
     // attempt gets a fresh content handler: the 0-based stepIndex counter resets,
     // a primary→fallback re-run reuses the same index per position, and the
-    // gateway dedupes by id.
+    // gatekeeper dedupes by id.
     //
     // `no_reply` is passed as a suppressed tool: a step that calls it ends the
     // turn with no reply, so text the model wrote alongside it must not leak out

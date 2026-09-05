@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { env } from "cloudflare:workers";
-import { createAgentRuntime, validateRecipe } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+import { createAgentRuntime, validateRecipe } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 import {
   SANDBOX_FAMILY,
   type ComputerConfig
-} from "@loopingai/plugins/computer";
-import { REPO_FAMILY } from "@loopingai/plugins/repo";
-import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
+} from "@dynamicagents/plugins/computer";
+import { REPO_FAMILY } from "@dynamicagents/plugins/repo";
+import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
 import {
   container,
   parentPlugins,

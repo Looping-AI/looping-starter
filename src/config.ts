@@ -1,9 +1,9 @@
-import type { CoreConfigOverrides } from "@loopingai/core";
+import type { CoreConfigOverrides } from "@dynamicagents/core";
 // Type-only, so nothing reaches a bundle: these two names are what make a
 // mistyped or renamed tuning field fail at `tsc` instead of being spread into a
 // plugin config and silently ignored.
-import type { RecallTuning } from "@loopingai/plugins/recall";
-import type { TriageTuning } from "@loopingai/plugins/triage";
+import type { RecallTuning } from "@dynamicagents/plugins/recall";
+import type { TriageTuning } from "@dynamicagents/plugins/triage";
 
 /**
  * Every value this agent tunes, in one file.
@@ -19,7 +19,7 @@ import type { TriageTuning } from "@loopingai/plugins/triage";
  */
 
 /**
- * What every agent in this Worker shares: the model pair and the gateway they
+ * What every agent in this Worker shares: the model pair and the AI Gateway they
  * are billed and correlated through.
  *
  * **You must choose these — core ships no default.** The model sets the cost of
@@ -143,7 +143,7 @@ export const CODER_CONFIG: CoreConfigOverrides = {
  * orchestrates, reviews and talks to the user, and none of that needs a frontier
  * model. What is different is that its subtasks do not run core's tool loop at
  * all: each one is a Claude Code session inside the workspace container, driven
- * by `@loopingai/plugins/claude-code`. See {@link CLAUDE_CODE_SESSION} for the
+ * by `@dynamicagents/plugins/claude-code`. See {@link CLAUDE_CODE_SESSION} for the
  * numbers that bound *that*, which are not these.
  *
  * `maxSubtasks: 1`, and it is the one value here worth arguing about.
@@ -171,7 +171,7 @@ export const CLAUDE_CODER_CONFIG: CoreConfigOverrides = {
  * bypasses it entirely to drive the CLI instead. A limit written there is inert.
  *
  * Nor is there a spend cap, deliberately — an estimate in dollars is a guess
- * about a subscription bucket nobody can read, and the gateway reads the bucket
+ * about a subscription bucket nobody can read, and the egress gateway reads the bucket
  * directly, rotating credentials when Anthropic says one is spent. That bounds
  * the deployment, not a session.
  *
@@ -217,7 +217,7 @@ export const CLAUDE_CODE_SESSION = {
 
   /**
    * Advisory, all three. Claude Code's own subagent tree is invisible to
-   * Looping's scheduler and multiplies whatever they say; `timeoutMs` is what
+   * Dynamic Agents' scheduler and multiplies whatever they say; `timeoutMs` is what
    * actually stops a run.
    */
   maxTurns: 60,
@@ -279,7 +279,7 @@ export const PROACTIVE_CONFIG: CoreConfigOverrides = {
 export const MAX_STEPS = 8;
 
 /**
- * `@loopingai/plugins/recall` tuning.
+ * `@dynamicagents/plugins/recall` tuning.
  *
  * The embedding model's output dimension and metric must match the Vectorize
  * index (`--dimensions=1024 --metric=cosine`). Changing the model means
@@ -297,7 +297,7 @@ export const RECALL = {
 } as const satisfies RecallTuning;
 
 /**
- * `@loopingai/plugins/triage` tuning — the proactive agent's pre-turn gate.
+ * `@dynamicagents/plugins/triage` tuning — the proactive agent's pre-turn gate.
  *
  * A small, fast model on purpose: it runs in front of *every* message the agent
  * sees, most of which are not for it, and its verdict is a single boolean.

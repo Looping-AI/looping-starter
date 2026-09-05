@@ -1,6 +1,6 @@
-# looping-starter
+# da-starter
 
-**A working, deployable Looping agent on Cloudflare Workers.**
+**A working, deployable Dynamic Agent on Cloudflare Workers.**
 
 Zero-trust A2A, durable task lifecycle, delegation to isolated subagents, episodic
 memory. Clone it, generate keys, deploy.
@@ -9,14 +9,14 @@ It ships **five example agents in one Worker** — grow the one you want, and
 `npm run agent:remove` the rest. Adding or removing a capability is a single line.
 
 Everything here is an _example_. The round loop, the durable Subtask rows, the
-subagent execution and the task lifecycle all live in `@loopingai/core`, so this
+subagent execution and the task lifecycle all live in `@dynamicagents/core`, so this
 repo is the ~250 lines per agent that are actually yours: plugins, soul, manifest,
 config, and the round contract.
 
 > Part of a three-package split:
-> [`@loopingai/core`](https://github.com/Looping-AI/looping-core) (the mandatory foundation) ·
-> [`@loopingai/plugins`](https://github.com/Looping-AI/looping-plugins) (optional capabilities) ·
-> **`looping-starter`** (this — a working agent that composes them).
+> [`@dynamicagents/core`](https://github.com/dynamicagents/core) (the mandatory foundation) ·
+> [`@dynamicagents/plugins`](https://github.com/dynamicagents/plugins) (optional capabilities) ·
+> **`da-starter`** (this — a working agent that composes them).
 
 ---
 
@@ -25,10 +25,10 @@ config, and the round contract.
 ```bash
 npm install
 npm run keygen          # one key for the deployment — see .env.example
-npx wrangler vectorize create looping-starter-recall --dimensions=1024 --metric=cosine
+npx wrangler vectorize create da-starter-recall --dimensions=1024 --metric=cosine
 ```
 
-Put the key and `GATEWAY_ORIGINS` in `.env` before starting — the Worker reads both
+Put the key and `GATEKEEPER_ORIGINS` in `.env` before starting — the Worker reads both
 on its first request ([`.env.example`](.env.example) documents every secret,
 including the coder-only ones):
 
@@ -52,7 +52,7 @@ To ship, set the same secrets with `wrangler secret put` (or push the whole file
 npm run deploy
 ```
 
-Register each agent with your gateway using the **same endpoint** and its own
+Register each agent with your gatekeeper using the **same endpoint** and its own
 **tenant id**:
 
 | endpoint                    | tenant id      |
@@ -130,11 +130,11 @@ createA2AWorker<Env>({
 ```
 
 Nothing else has to be told. The cards' `supportedInterfaces[0].url` is built as
-`${origin}${rpcPath}`, each card's `jku` points at `jwksPath`, and the gateway-token
+`${origin}${rpcPath}`, each card's `jku` points at `jwksPath`, and the gatekeeper-token
 `audience` defaults to that same `${origin}${rpcPath}` — so the path served, the path
 advertised, and the audience tokens must be minted for stay in step by construction.
 
-What does _not_ follow automatically is the **gateway's registration**, which has to name
+What does _not_ follow automatically is the **gatekeeper's registration**, which has to name
 the endpoint this deployment actually serves: that URL is the `aud` its tokens carry. Change
 `rpcPath` on an already-registered agent and every request 401s until it is re-registered.
 
@@ -142,7 +142,7 @@ the endpoint this deployment actually serves: that URL is the `aud` its tokens c
 
 That is what this repo did first, and it cannot work. The AgentCard lives at a **well-known
 URI**, which RFC 8615 defines per-authority, so only one card per origin is discoverable at
-the path A2A registered with IANA. A gateway resolving `/.well-known/agent-card.json`
+the path A2A registered with IANA. A gatekeeper resolving `/.well-known/agent-card.json`
 against the origin found whichever agent owned the bare path and pinned _its_ key for every
 agent here — so the rest registered under a name and key that were not theirs, and their
 push callbacks were rejected after the model work was already done.
@@ -170,17 +170,18 @@ Each agent used to hold its own signing key, which never bought anything: they s
 Worker and an `env`, so each could always read the others'. The card is per-origin and so
 is the key.
 
-What separates them is the gateway token's **tenant claim**, checked against the tenant the
+What separates them is the gatekeeper token's **tenant claim**, checked against the tenant the
 request addressed. That is a real boundary — it is cryptographic, and it holds even though
 they share an audience. Without it `tenant` would be an unauthenticated field in the
 request body, and a token minted for one agent would work against any sibling.
 
-> **This needs a gateway that mints the tenant claim and registers agents with a tenant id**
-> ([looping-gateway#62](https://github.com/Looping-AI/looping-gateway/pull/62)), on the
-> `loopingai.org` claim namespace
-> ([#68](https://github.com/Looping-AI/looping-gateway/pull/68)). Both are required: a
-> gateway with the first but not the second mints `https://looping.ai/tenant`, core reads
-> `https://loopingai.org/tenant`, and every request 401s on the empty-tenant comparison. The
+> **This needs a gatekeeper that mints the tenant claim and registers agents with a tenant
+> id** ([slack-gatekeeper#62](https://github.com/dynamicagents/slack-gatekeeper/pull/62)), on
+> the `dynamicagents.dev` claim namespace — `@dynamicagents/g2a-protocol` 0.3.0 moved both
+> claims there from `loopingai.org`. Both are required, and the failure mode when only one
+> lands is silent on the minting side: the gatekeeper writes a tenant claim core never reads,
+> core compares an empty tenant against the one the body addressed, and **every request
+> 401s**. Neither build notices, because each side is internally consistent on its own. The
 > two sides do not interoperate across either change in either direction, so they deploy
 > together and registered agents are re-registered.
 
@@ -197,8 +198,8 @@ request body, and a token minted for one agent would work against any sibling.
 | [`claude-coder/`](src/agents/claude-coder/) | The same, but each subtask is a Claude Code session in the container    | **Proves a subtask need not be a model loop at all** — `executeChunk` is overridden outright     |
 
 Reactive, arc-player and both coders are all `RoundAgentBase` from
-[`@loopingai/core/round`](https://github.com/Looping-AI/looping-core) and differ in five
-methods each. Proactive extends `LoopingAgent` directly and writes its own loop — it
+[`@dynamicagents/core/round`](https://github.com/dynamicagents/core) and differ in five
+methods each. Proactive extends `DynamicAgent` directly and writes its own loop — it
 imports no part of `/round` at all, and `npm run verify:isolation` asserts that on the
 built graph. Two genuinely different loop shapes on one core.
 
@@ -215,7 +216,7 @@ A **container**. Everything else about them — the round loop, the durable Subt
 rows, the model pair — is what every other agent here runs.
 
 The two differ in exactly one place, and it is one level below the agent: what a
-subtask _is_. A `coder` subtask is a Looping subagent running core's tool loop
+subtask _is_. A `coder` subtask is a Dynamic Agents subagent running core's tool loop
 inside the container. A `claude-coder` subtask is one `claude -p` session — its
 own loop, its own tools, its own context management — which is why that agent
 overrides `executeChunk` instead of configuring a recipe. Their workspace Durable
@@ -229,14 +230,14 @@ means running that client, and the client runs in a container that also runs a
 cloned repository's `postinstall`. The credential never goes there: the session
 launches with a placeholder, and `{ mode: "http-gateway" }` routes every outbound
 request through a `Fetcher` on the Worker side which swaps the real one in. That
-gateway also holds an ordered **pool** of credentials and rotates when Anthropic
-says one's 5-hour or weekly bucket is spent.
+egress gateway also holds an ordered **pool** of credentials and rotates when
+Anthropic says one's 5-hour or weekly bucket is spent.
 
 Every agent's own round loop, both coders included, runs on Workers AI through
 the `AI` binding. **There is no model credential in this deployment**: the
 binding is authenticated by the platform, so there is nothing to store, nothing
-to rotate, and the coder's container has never seen one. A gateway `401` means
-Authenticated Gateway is switched on for the gateway named by `aiGatewayId` —
+to rotate, and the coder's container has never seen one. An AI Gateway `401` means
+Authenticated Gateway is switched on for the AI Gateway named by `aiGatewayId` —
 switch it off, because the binding does not send a token.
 [`.env.example`](.env.example) is the full list of what a deployment does need.
 
@@ -315,7 +316,7 @@ export const plugins = (host: PluginHost): AgentPlugin[] => [
 ];
 ```
 
-Nothing in core imports a plugin, and `@loopingai/plugins` has no root barrel — the bare
+Nothing in core imports a plugin, and `@dynamicagents/plugins` has no root barrel — the bare
 specifier does not resolve — so the guarantee is structural rather than a tree-shaker's
 opinion. `npm run verify:isolation` asserts it on the built module graph.
 
@@ -333,7 +334,7 @@ A plugin is not a package; it is an object satisfying a contract.
 rather than installs — the `general` catch-all subtask type, declared with `definePlugin`
 and indistinguishable from a published plugin at the seam.
 
-It is also _why_ there is no `@loopingai/plugins/general`: core's `validateRecipe` refuses
+It is also _why_ there is no `@dynamicagents/plugins/general`: core's `validateRecipe` refuses
 a recipe with no soul rather than lending it one, so that no run ever executes under an
 identity nobody chose. That identity is yours to write.
 
@@ -362,7 +363,7 @@ isolation entry _never_ — it just quietly stops checking that agent.
 Add-then-remove returns all four files byte-for-byte to where they started, which is
 the test that keeps this honest.
 
-> The signing key and `GATEWAY_ORIGINS` are **not** removed: they belong to the
+> The signing key and `GATEKEEPER_ORIGINS` are **not** removed: they belong to the
 > deployment, not to any one agent. A secret only one agent's plugins needed —
 > `ARC_API_KEY` — is yours to drop.
 
@@ -392,7 +393,7 @@ that pulled it in. Sizes move with every dependency bump — the ceilings in
 [`scripts/verify-isolation.mjs`](scripts/verify-isolation.mjs) are what CI enforces, and
 raising one is a deliberate act that belongs in the same commit as whatever grew it.
 
-Proactive's `forbidden` list carries `@loopingai/core/dist/round/` as well as the
+Proactive's `forbidden` list carries `@dynamicagents/core/dist/round/` as well as the
 plugins its siblings install. That is the strongest line in the file: core ships the
 whole delegating loop behind an opt-in subpath, and an agent that answers in one turn
 must not pay a byte for it. It is also why proactive is ~1.5 MiB rather than ~2.5.
@@ -438,7 +439,7 @@ npm run cf -- help
 ## Local development across the three repos
 
 ```bash
-npm run link:local    # npm pack + tarball install from ../looping-core, ../looping-plugins
+npm run link:local    # npm pack + tarball install from ../core, ../plugins
 ```
 
 `npm pack` + tarball, deliberately — **not `npm link`**, which symlinks the checkout and
@@ -451,7 +452,7 @@ Nothing is written to `package.json`, so a plain `npm install` — and CI, which
 this — always builds against the real packages.
 
 `--no-save` protects the manifest, not the lockfile: npm can still pin both packages to
-`file:/var/folders/…/looping-pack-*.tgz`, and those paths do not exist on a CI runner — or
+`file:/var/folders/…/da-pack-*.tgz`, and those paths do not exist on a CI runner — or
 on your machine once the temp dir is cleaned. The script now detects that and restores
 `package-lock.json` itself, so the damage no longer lands on whoever pulls next.
 
@@ -478,4 +479,4 @@ scripts/
 
 ## License
 
-[GPL-3.0-only](./LICENSE).
+[Apache-2.0](./LICENSE).

@@ -1,4 +1,4 @@
-import type { AgentManifest } from "@loopingai/core/a2a";
+import type { AgentManifest } from "@dynamicagents/core/a2a";
 
 /**
  * The transport-independent half of this agent's AgentCard. `buildBaseCard` adds
@@ -30,7 +30,7 @@ export const manifest: AgentManifest = {
       // Empty means "inherit the card's defaultInput/OutputModes".
       inputModes: [],
       outputModes: [],
-      // Empty means "inherit the card-level requirement" (the gateway JWT).
+      // Empty means "inherit the card-level requirement" (the gatekeeper JWT).
       securityRequirements: []
     },
     {

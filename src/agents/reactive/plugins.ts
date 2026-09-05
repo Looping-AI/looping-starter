@@ -1,16 +1,16 @@
-import type { AgentPlugin } from "@loopingai/core";
-import { browser } from "@loopingai/plugins/browser";
-import { recall } from "@loopingai/plugins/recall";
-import { workspace } from "@loopingai/plugins/workspace";
+import type { AgentPlugin } from "@dynamicagents/core";
+import { browser } from "@dynamicagents/plugins/browser";
+import { recall } from "@dynamicagents/plugins/recall";
+import { workspace } from "@dynamicagents/plugins/workspace";
 import { RECALL } from "@/config";
-import type { PluginHost } from "@loopingai/core/host";
+import type { PluginHost } from "@dynamicagents/core/host";
 import { general } from "./general";
 
 /**
  * The one file you edit to add or remove a capability for this agent.
  *
  * Delete a line and that module leaves the bundle entirely. Nothing in core
- * imports a plugin, and `@loopingai/plugins` has no root barrel — the bare
+ * imports a plugin, and `@dynamicagents/plugins` has no root barrel — the bare
  * specifier does not resolve — so the guarantee is structural rather than a
  * tree-shaker's opinion. `npm run verify:isolation` asserts it on the built graph.
  *
@@ -40,7 +40,7 @@ export const plugins = (host: PluginHost<Env>): AgentPlugin[] => [
     ai: host.env.AI,
     index: host.env.VECTORIZE,
     namespace: host.callerKey,
-    // The host's *resolved* gateway id, so embedding calls are correlated with
+    // The host's *resolved* AI Gateway id, so embedding calls are correlated with
     // chat calls. Spread the rest: enumerating each field silently drops any
     // option the plugin adds later.
     aiGatewayId: host.aiGatewayId,

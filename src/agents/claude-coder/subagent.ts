@@ -1,12 +1,12 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
-import { RecipeSubagentHost } from "@loopingai/core/round";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
+import { RecipeSubagentHost } from "@dynamicagents/core/round";
 import type {
   RecipeChunkResult,
   RecipeExecutionRequest,
   RecipeExecutionResult,
   SubtaskRuntime
-} from "@loopingai/core/subtasks";
+} from "@dynamicagents/core/subtasks";
 import { getWorkspace } from "@cloudflare/computer";
 import {
   claudeCodeSession,
@@ -16,8 +16,11 @@ import {
   type DrainCursor,
   type DrainOutcome,
   type SessionRuntime
-} from "@loopingai/plugins/claude-code";
-import { sessionAdvisory, truncateOutput } from "@loopingai/plugins/computer";
+} from "@dynamicagents/plugins/claude-code";
+import {
+  sessionAdvisory,
+  truncateOutput
+} from "@dynamicagents/plugins/computer";
 import { CLAUDE_CODE_SESSION, CLAUDE_CODER_CONFIG } from "@/config";
 import { claudeCodeConfig } from "./claude-code";
 import { subagentPlugins } from "./plugins";
@@ -244,7 +247,7 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
      * Ask before paying for a container start.
      *
      * An invocation carries an 18.7-27k-token cached prefix before it does
-     * anything, so starting a session whose first model call the gateway will
+     * anything, so starting a session whose first model call the egress gateway will
      * refuse costs that prefix to learn what one RPC answers for free — and
      * reports it as a failed run rather than as a limit with a time on it.
      *

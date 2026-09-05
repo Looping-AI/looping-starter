@@ -4,7 +4,7 @@
  * Short on purpose, and the shortness is the demonstration. Everything specific
  * to ARC — what the agent can do, which tool lists the games, how to shape a
  * `delegate` payload for a play, what to do with the score that comes back — is
- * declared by `@loopingai/plugins/arc-agi` on its subtask type and rendered into
+ * declared by `@dynamicagents/plugins/arc-agi` on its subtask type and rendered into
  * the prompt by the runtime. This file says only who the agent *is*, which is the
  * one thing no plugin can know.
  *
@@ -24,7 +24,7 @@ export const SOUL: string[] = [
  * The frozen soul plus whatever the installed plugins say they can do.
  *
  * `capabilities` is `runtime.renderCapabilities()`, which here is
- * `@loopingai/plugins/arc-agi`'s block describing `arc_list_games` and the
+ * `@dynamicagents/plugins/arc-agi`'s block describing `arc_list_games` and the
  * `arc-game` subtask type. Uninstall the plugin and both the tools and the advice
  * about them disappear together.
  */

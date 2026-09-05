@@ -1,4 +1,4 @@
-import { defineAgent } from "@loopingai/core/worker";
+import { defineAgent } from "@dynamicagents/core/worker";
 import { manifest } from "./manifest";
 
 /**

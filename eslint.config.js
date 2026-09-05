@@ -1,5 +1,5 @@
 import tseslint from "typescript-eslint";
-import looping from "@loopingai/core/eslint";
+import da from "@dynamicagents/core/eslint";
 
 const LINTED_FILES = ["src/**/*.ts", "test/**/*.ts"];
 
@@ -36,7 +36,7 @@ export default tseslint.config(
     //
     // Every agent, not just proactive. The exception this used to carry was
     // `reactive/turn.ts`, shared with arc-player; that loop now lives in
-    // `@loopingai/core/round` and both import it from there, so there is nothing
+    // `@dynamicagents/core/round` and both import it from there, so there is nothing
     // left to except and no reason the other three should go unguarded.
     //
     // Banning the `@/agents/*` alias outright is safe because no file uses it —
@@ -71,7 +71,7 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ["@loopingai/plugins/arc-agi"],
+              group: ["@dynamicagents/plugins/arc-agi"],
               message:
                 "The proactive agent does not install arc-agi; importing it puts the whole " +
                 "plugin in its bundle and fails npm run verify:isolation."
@@ -85,7 +85,7 @@ export default tseslint.config(
     // Type-aware pass — enables @deprecated detection without switching the
     // whole config to recommendedTypeChecked and its stricter rule set.
     files: LINTED_FILES,
-    plugins: { "@typescript-eslint": tseslint.plugin, looping },
+    plugins: { "@typescript-eslint": tseslint.plugin, da },
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
@@ -97,7 +97,7 @@ export default tseslint.config(
       "@typescript-eslint/no-deprecated": "error",
       // Covers the object-literal keys `no-deprecated` structurally cannot see —
       // i.e. every `generateText({ system: … })`-style options bag.
-      "looping/no-deprecated-object-properties": "error"
+      "da/no-deprecated-object-properties": "error"
     }
   },
   {

@@ -16,7 +16,7 @@
  * runs without credentials: the unit specs against core's `mock-model`.
  */
 import { describe, it, expect } from "vitest";
-import { setupRecording } from "@loopingai/core/testing";
+import { setupRecording } from "@dynamicagents/core/testing";
 
 setupRecording();
 

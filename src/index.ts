@@ -1,4 +1,4 @@
-import { createA2AWorker } from "@loopingai/core/worker";
+import { createA2AWorker } from "@dynamicagents/core/worker";
 
 import { hostManifest } from "./host-manifest";
 import { reactive } from "./agents/reactive/definition";
@@ -63,8 +63,8 @@ export { ClaudeCoderWorkflow } from "./agents/claude-coder/workflow";
  *
  * A tenant rather than a path prefix, and one signing key rather than one per
  * agent, both because the AgentCard lives at a **well-known URI** — RFC 8615
- * defines those per-authority, so this origin serves one card and a gateway pins
- * one key. What separates the agents is the gateway token's tenant claim,
+ * defines those per-authority, so this origin serves one card and a gatekeeper pins
+ * one key. What separates the agents is the gatekeeper token's tenant claim,
  * checked by core against the tenant the request addressed: a cryptographic
  * boundary that holds even though they share an audience. The README works
  * through why the alternative cannot be made to work.

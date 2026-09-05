@@ -5,12 +5,12 @@ import path from "node:path";
 // `/testing` barrel pulls in `cloudflare:test` and `vitest`, which fails at load
 // before a single test runs.
 import {
-  GATEWAY_ORIGIN,
+  GATEKEEPER_ORIGIN,
   TEST_AGENT_PRIVATE_JWK
-} from "@loopingai/core/testing/fixtures";
+} from "@dynamicagents/core/testing/fixtures";
 // Node-realm half of the VCR harness: it reaches `node:fs` to read and write
 // cassettes, which workerd has no equivalent of.
-import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
+import { createVcr, recordFromEnv } from "@dynamicagents/core/testing/node";
 
 /**
  * The whole suite runs in the Workers runtime (workerd via miniflare) through a
@@ -27,9 +27,9 @@ import { createVcr, recordFromEnv } from "@loopingai/core/testing/node";
 // (wrangler.jsonc) from `process.env` into the worker `env`.
 //
 // One key for the whole deployment, in tests as in production — the card is
-// per-origin, so the key the gateway pins is too.
+// per-origin, so the key the gatekeeper pins is too.
 process.env.A2A_SIGNING_KEY ??= JSON.stringify(TEST_AGENT_PRIVATE_JWK);
-process.env.GATEWAY_ORIGINS ??= JSON.stringify([GATEWAY_ORIGIN]);
+process.env.GATEKEEPER_ORIGINS ??= JSON.stringify([GATEKEEPER_ORIGIN]);
 process.env.ARC_API_KEY ??= "test-key";
 // The coder's. Never real: nothing in the suite reaches GitHub — the repo tools
 // are tested against an injected `exec`. It exists only so `secrets.required` is
@@ -43,13 +43,13 @@ process.env.ARC_API_KEY ??= "test-key";
 // here would hide the case an operator actually hits.
 process.env.GITHUB_TOKEN ??= "test-token";
 // The identity half of the same setup, left blank on purpose: that satisfies
-// `secrets.required` while exercising the same `|| "looping-coder"` fallback a
+// `secrets.required` while exercising the same `|| "da-coder"` fallback a
 // real deploy takes when an operator leaves them unset.
 process.env.GITHUB_NAME ??= "";
 process.env.GITHUB_EMAIL ??= "";
 // claude-coder's credential pool. Never real, and nothing in the suite reaches
-// Anthropic — the gateway is tested against a stubbed `fetch` in
-// `@loopingai/plugins`, and no spec here starts a session. Two of them because
+// Anthropic — the egress gateway is tested against a stubbed `fetch` in
+// `@dynamicagents/plugins`, and no spec here starts a session. Two of them because
 // the pool is two entries in `wrangler.jsonc`'s `secrets.required`, and the pool
 // only ever leaves this Worker through the egress gateway.
 process.env.CLAUDE_CODE_OAUTH_TOKEN_1 ??= "sk-ant-oat01-test-1";
@@ -125,6 +125,6 @@ export default defineConfig({
     include: ["test/**/*.spec.ts"],
     // Node realm. Last chance to flush a cassette; each is already written when
     // its test releases it, so this is only a safety net.
-    globalSetup: ["@loopingai/core/testing/vcr-global-setup"]
+    globalSetup: ["@dynamicagents/core/testing/vcr-global-setup"]
   }
 });

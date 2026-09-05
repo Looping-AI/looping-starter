@@ -1,10 +1,10 @@
-import type { AgentPlugin, CoreConfigOverrides } from "@loopingai/core";
-import type { PluginHost } from "@loopingai/core/host";
+import type { AgentPlugin, CoreConfigOverrides } from "@dynamicagents/core";
+import type { PluginHost } from "@dynamicagents/core/host";
 import {
   RoundAgentBase,
   type RoundPolicy,
   type SubagentClass
-} from "@loopingai/core/round";
+} from "@dynamicagents/core/round";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { activeRepo } from "@/workspace/active-repo";
@@ -21,7 +21,7 @@ const LABEL = "coder";
  * The coder agent.
  *
  * A delegating round agent like `reactive`: the loop, the durable Subtask rows
- * and the subagent execution are all `@loopingai/core/round`, and the model pair
+ * and the subagent execution are all `@dynamicagents/core/round`, and the model pair
  * is core's Workers AI default like every other agent here.
  *
  * What makes it the odd one out is the container underneath — so the overrides

@@ -1,18 +1,18 @@
-import { definePlugin, type AgentPlugin } from "@loopingai/core";
-import { WORKSPACE_FAMILY } from "@loopingai/plugins/workspace";
-import { BROWSER_FAMILY } from "@loopingai/plugins/browser";
+import { definePlugin, type AgentPlugin } from "@dynamicagents/core";
+import { WORKSPACE_FAMILY } from "@dynamicagents/plugins/workspace";
+import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
 
 /**
  * The `general` subtask type — a plugin this repo writes rather than installs.
  *
  * Worth reading as the example it is: a plugin is not a package, it is an object
  * satisfying a contract, and `definePlugin` is available to your app for exactly
- * this. Nothing here imports from `@loopingai/plugins` except two family-name
+ * this. Nothing here imports from `@dynamicagents/plugins` except two family-name
  * constants, and nothing in core knows this type exists — it arrives through the
  * same `plugins()` array as the published ones and is indistinguishable from them
  * at the seam.
  *
- * It is also the reason there is no `@loopingai/plugins/general`. A house-default
+ * It is also the reason there is no `@dynamicagents/plugins/general`. A house-default
  * subagent soul in a library is exactly what core refuses to have: `validateRecipe`
  * rejects a recipe with no soul rather than lending it one, so that no run ever
  * executes under an identity nobody chose. This is the identity *this* agent
