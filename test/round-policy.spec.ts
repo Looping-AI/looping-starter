@@ -34,8 +34,10 @@ describe("roundContract", () => {
 });
 
 describe("finalRoundNote", () => {
+  const limits = { maxTurns: 20, maxWallMs: 60_000 };
+
   it("tells a budget-spent round it has no way out but answering", () => {
-    const note = finalRoundNote({ maxTurns: 20, maxWallMs: 60_000 });
+    const note = finalRoundNote(limits, "budget");
     expect(note).toContain("Your budget is spent");
     expect(note).toContain(FINAL_REPLY_TOOL_NAME);
     // Names the budget as a fact rather than as a withheld capability — a
@@ -48,14 +50,41 @@ describe("finalRoundNote", () => {
     // module asserts that; it lives in the runtime's control-tool wiring. What
     // this text owns is telling the model so in plain words, rather than
     // leaving it to notice the tool is simply gone from its schema.
-    const note = finalRoundNote({ maxTurns: 20, maxWallMs: 60_000 });
-    expect(note).toContain("cannot delegate");
+    for (const reason of ["budget", "no-progress"] as const) {
+      expect(finalRoundNote(limits, reason)).toContain("cannot delegate");
+    }
   });
 
   it("renders wall-clock minutes, not raw milliseconds", () => {
-    const note = finalRoundNote({ maxTurns: 20, maxWallMs: 30 * 60_000 });
+    const note = finalRoundNote(
+      { maxTurns: 20, maxWallMs: 30 * 60_000 },
+      "budget"
+    );
     expect(note).toContain("30");
     expect(note).not.toContain("1800000");
+  });
+
+  it("never tells a stalled round its budget is spent", () => {
+    // The reason this takes a reason at all. A task the loop stopped for want of
+    // progress still has budget left, and a model told otherwise does not just
+    // hold a wrong belief — it hands that belief to the user as the explanation
+    // for what went wrong.
+    const note = finalRoundNote(limits, "no-progress");
+    expect(note).not.toContain("budget");
+    expect(note).not.toContain("20 turns");
+    // What it says instead is the thing that is actually true.
+    expect(note).toContain("failed the same way");
+    expect(note).toContain(FINAL_REPLY_TOOL_NAME);
+  });
+
+  it("forbids the reply that promises another attempt", () => {
+    // `final_reply` ends the task; nothing runs after it. A round stopped
+    // *because* retrying changed nothing is the last place to announce a retry —
+    // "announcing is not doing", which the round contract above already guards
+    // for the ordinary case.
+    expect(finalRoundNote(limits, "no-progress")).toContain(
+      "Do not say you will try again"
+    );
   });
 });
 
