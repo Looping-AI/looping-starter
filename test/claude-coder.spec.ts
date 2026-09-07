@@ -5,6 +5,7 @@ import { createAgentRuntime } from "@dynamicagents/core";
 import type { PluginHost } from "@dynamicagents/core/host";
 import type { RecipeExecutionRequest } from "@dynamicagents/core/subtasks";
 import { makeDoHelpers } from "@dynamicagents/core/testing";
+import { getWorkspace } from "@cloudflare/computer";
 import {
   CLAUDE_CODE_TYPE,
   WORKSPACE_RUNTIME_KEY
@@ -220,7 +221,14 @@ describe("executeChunk refuses to guess", () => {
 
   it("fails with an ordering sentence when nothing has been cloned", async () => {
     // A real workspace, reachable and empty: `checkoutDir()` has nothing to
-    // report because no `repo_clone` has run against it.
+    // report because nothing has been opened in it.
+    //
+    // **This test still passing is half of the proof for the checkout record.**
+    // The refusal it asserts is correct here and was wrong for every non-Node
+    // repository, and the two were indistinguishable from the outside — an
+    // empty workspace and a perfectly good checkout the install had skipped
+    // both answered `undefined`. So it is kept exactly as it was, next to the
+    // case that used to be caught by it wrongly.
     const workspace = freshWorkspace("no-checkout");
     const name = await runInDurableObject(workspace, (_i, state) =>
       state.id.toString()
@@ -235,10 +243,69 @@ describe("executeChunk refuses to guess", () => {
 
     expect(outcome.done).toBe(true);
     if (outcome.done && outcome.result.status === "failed") {
-      expect(outcome.result.error).toMatch(/Clone the repository before/);
+      expect(outcome.result.error).toMatch(/Clone a repository with/);
     } else {
       expect.unreachable("a subtask with no checkout must fail");
     }
+  });
+});
+
+/**
+ * The other side of the refusal above, and the one the incident turned on.
+ *
+ * A checkout the install resolver had nothing to do in is still a checkout. It
+ * used to be indistinguishable from an empty workspace here, because the path
+ * this gate reads was written only by an install that actually ran — so a
+ * repository holding a `README.md` and no `package.json` was refused thirteen
+ * times in twelve minutes for a checkout that was sitting right there
+ * (`Debug.md` §3, RC-1).
+ *
+ * The assertion is negative on purpose. There is no container in this pool, so a
+ * chunk that gets past the gate cannot go on to run a session — what is being
+ * specified is that the gate is no longer what stops it.
+ */
+describe("a checkout with nothing to install", () => {
+  it("is not mistaken for an empty workspace", async () => {
+    const dir = "/workspace/spike";
+    /**
+     * Addressed by **name**, not by id, because this is the one test in the file
+     * where the subagent has to reach the very object the test seeded.
+     * `freshStub` names its object with a UUID it does not hand back, and the
+     * facet resolves its workspace with `idFromName(runtime[…])` — so passing an
+     * id string there names a *different*, empty object. Which is harmless for
+     * the empty-workspace test above and would quietly gut this one.
+     */
+    const name = `test:skipped-install:${crypto.randomUUID()}`;
+    const workspace = env.CLAUDE_CODER_WORKSPACE.get(
+      env.CLAUDE_CODER_WORKSPACE.idFromName(name)
+    );
+
+    // A repository with git in it and no lockfile: cloned, recorded, and skipped
+    // by the resolver.
+    using ws = await getWorkspace(
+      workspace as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    await ws.fs.mkdir(`${dir}/.git`, { recursive: true });
+    await ws.fs.writeFile(`${dir}/.git/HEAD`, "ref: refs/heads/main\n");
+    await workspace.noteCheckout({ dir, kind: "repo", repo: "acme/spike" });
+    expect((await workspace.startInstall({ dir })).state).toBe("skipped");
+
+    const stub = freshSubagent("skipped-install");
+    const outcome = await runInDurableObject(
+      stub,
+      (instance: ClaudeCoderSubagent) =>
+        instance.executeChunk(request(), 0, { [WORKSPACE_RUNTIME_KEY]: name })
+    ).catch((err: unknown) => ({ thrown: String(err) }));
+
+    // However this chunk ends without a container, it must not end by claiming
+    // there is nothing to work on.
+    const said =
+      "thrown" in outcome
+        ? outcome.thrown
+        : outcome.done && outcome.result.status === "failed"
+          ? outcome.result.error
+          : "";
+    expect(said).not.toMatch(/Clone a repository with/);
   });
 });
 

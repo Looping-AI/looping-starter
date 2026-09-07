@@ -7,6 +7,7 @@ import { activeRepo } from "@/workspace/active-repo";
 import { workspaceContainer } from "@/workspace/container";
 import { workspaceGit } from "@/workspace/git";
 import { workspaceName } from "@/workspace/object";
+import { scratch } from "@/workspace/scratch";
 import { code } from "./code";
 
 /**
@@ -91,6 +92,18 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
         workspaceName(host.callerKey(), active.get())
       )
     );
+  /**
+   * Hoisted because two plugins commit under it now.
+   *
+   * Defaults to the generic `da-coder` identity — see `.env.example` for
+   * `GITHUB_NAME`/`GITHUB_EMAIL` and why. Has to match `defaultGitIdentity` in
+   * `src/workspace/object.ts`, or a commit could be attributed differently
+   * depending on which side made it.
+   */
+  const author = {
+    name: host.env.GITHUB_NAME || "da-coder",
+    email: host.env.GITHUB_EMAIL
+  };
 
   return [
     // Declared first: order in this array is the order the delegating model is
@@ -123,14 +136,7 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Still needed, and now only for `repo_open_pr` — the one credentialed
       // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
-      // Defaults to the generic `da-coder` identity — see `.env.example`
-      // for `GITHUB_NAME`/`GITHUB_EMAIL` and why. Has to match
-      // `defaultGitIdentity` in `src/workspace/object.ts`, or a commit could be
-      // attributed differently depending on which side made it.
-      author: {
-        name: host.env.GITHUB_NAME || "da-coder",
-        email: host.env.GITHUB_EMAIL
-      },
+      author,
 
       // The two hooks that make per-repository workspaces work, and the order
       // between them is the whole design. `beforeCheckout` fires with the parsed
@@ -139,14 +145,43 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // the tree is there, which is when an install becomes meaningful.
       beforeCheckout: ({ owner, repo: name }) => active.set(`${owner}/${name}`),
       afterCheckout: async ({ dir, repo: name }) => {
+        const ws = workspace();
+        // **Before the install, and that ordering is the fix.** Where the
+        // checkout is used to be recorded only as a side effect of installing
+        // into it, so a repository with no `package.json` — which the resolver
+        // skips — left `checkoutDir()` answering `undefined`. This agent's
+        // subagent does not read it, so the cost here was quieter than the
+        // claude-coder's: the cancellation path fell through to a path derived
+        // from the repository name, which is right only while a clone lands
+        // exactly where the convention says.
+        await ws.noteCheckout({
+          dir,
+          kind: "repo",
+          ...(name ? { repo: name } : {})
+        });
         // Returns as soon as the command is spawned — the workspace object
         // drains it. Blocking here would put a 225-second install inside a
         // model turn, which is the failure this whole arrangement avoids.
-        await workspace().startInstall({
+        await ws.startInstall({
           dir,
           ...(name ? { repo: name } : {})
         });
       }
+    }),
+    /**
+     * A place to work when the work is not a repository.
+     *
+     * Next to `repo` because it answers the same question — *where does this
+     * task happen* — and because the two are alternatives: a task opens a
+     * checkout or a scratchpad, never both. It shares `repo`'s shell, its author
+     * identity and its workspace thunk, so there is one answer to each of those
+     * rather than a second one drifting alongside.
+     */
+    scratch({
+      exec: computerExec(config),
+      workspace,
+      active,
+      author
     }),
     restrictMainAgentTools(computer(config), {
       allow: [...PARENT_SANDBOX_TOOLS],

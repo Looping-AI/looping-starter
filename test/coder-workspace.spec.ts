@@ -6,6 +6,7 @@ import { getWorkspace } from "@cloudflare/computer";
 import type { InstallState } from "@dynamicagents/plugins/computer";
 import { INSTALL_PLAN } from "@/workspace/install-plan";
 import { TRUST_CA_COMMAND } from "@/workspace/object";
+import { SCRATCH_DIR } from "@/workspace/scratch";
 
 /**
  * The install gate, and the two ways it used to hang forever.
@@ -38,17 +39,40 @@ function storedInstall(stub: DurableObjectStub) {
 }
 
 /**
- * Put a checkout in the workspace that the resolver will act on.
+ * Put a checkout in the workspace — a directory with a `.git` in it, and nothing
+ * else.
  *
- * Without this the resolver finds no `package.json`, returns `skip`, and
- * `startInstall` never reaches the spawn — so the spawn test would pass while
- * testing nothing at all.
+ * **The lockfile lives in {@link seedNodeCheckout}, and the split is the point.**
+ * There used to be one helper and it wrote a `package.json` into every fixture,
+ * for a good local reason: without one the resolver returns `skip` and
+ * `startInstall` never reaches the spawn, so the spawn test would pass while
+ * testing nothing. The cost of that convenience was invisible and total —
+ * **every** workspace in this suite had dependencies to install, so the `skip`
+ * branch was never on any test's path, and the fault it carried shipped under a
+ * green suite. A repository with no `package.json` could be cloned and never
+ * worked in.
+ *
+ * So the two facts are now separate: this is a checkout, and that is a checkout
+ * that installs. Tests that need the resolver to act reach for the second; every
+ * other test gets the branch the suite could not previously see.
  */
-async function seedCheckout(stub: DurableObjectStub, dir: string) {
+async function seedGitCheckout(stub: DurableObjectStub, dir: string) {
   using ws = await getWorkspace(
     stub as unknown as Parameters<typeof getWorkspace>[0]
   );
-  await ws.fs.mkdir(dir, { recursive: true });
+  await ws.fs.mkdir(`${dir}/.git`, { recursive: true });
+  // `.git` is a directory in a real checkout, but what the workspace probes for
+  // is its presence, and a file is what a fixture can create in one call. It is
+  // the same question either way: is there a git repository here.
+  await ws.fs.writeFile(`${dir}/.git/HEAD`, "ref: refs/heads/main\n");
+}
+
+/** A checkout the install resolver will act on: git, plus a lockfile. */
+async function seedNodeCheckout(stub: DurableObjectStub, dir: string) {
+  await seedGitCheckout(stub, dir);
+  using ws = await getWorkspace(
+    stub as unknown as Parameters<typeof getWorkspace>[0]
+  );
   await ws.fs.writeFile(`${dir}/package.json`, '{"name":"probe"}');
   await ws.fs.writeFile(`${dir}/package-lock.json`, '{"lockfileVersion":3}');
 }
@@ -57,7 +81,7 @@ describe("the install gate", () => {
   it("reports failed, not running, when the command cannot be started", async () => {
     const stub = freshWorkspace("install-spawn");
     const dir = "/workspace/probe";
-    await seedCheckout(stub, dir);
+    await seedNodeCheckout(stub, dir);
 
     // The resolver now has a lockfile to act on, so `startInstall` gets all the
     // way to the spawn — where there is no container, which is precisely how it
@@ -112,7 +136,7 @@ describe("the install gate", () => {
   it("resolves a running record before starting another install", async () => {
     const stub = freshWorkspace("install-reentry");
     const dir = "/workspace/probe";
-    await seedCheckout(stub, dir);
+    await seedNodeCheckout(stub, dir);
 
     const startedAt = Date.now() - 30_000;
     await runInDurableObject(stub, (_instance, state) =>
@@ -236,6 +260,117 @@ describe("the install gate", () => {
  * alarm. These tests cover the detection; the alarm's own handler needs a
  * container and is covered end to end.
  */
+/**
+ * Where the work is, and the fault that made it mean something else.
+ *
+ * `checkoutDir()` used to read the *install context*, which is written on one
+ * path only: the `run` branch of `#beginInstall`. The `skip` branch — taken for
+ * every checkout the resolver finds nothing to install in — returned without
+ * writing one. So a repository with no `package.json` cloned perfectly, reported
+ * itself correctly through `repo_clone` and `repo_status`, and answered
+ * `undefined` to the one question a delegation asks: where do I work? The
+ * `claude-code` subagent reads that as "nothing has been cloned" and refuses,
+ * permanently, for that repository.
+ *
+ * It reached production and ran for twelve minutes on 2026-09-05, refusing
+ * thirteen identical delegations against a repository holding only a `README.md`
+ * (`Debug.md` §3, RC-1). The suite was green throughout, because every fixture
+ * in it had a lockfile — see {@link seedGitCheckout}.
+ *
+ * The first test below fails on the unfixed object. The rest are what stop the
+ * fix being "write the same value one line earlier".
+ */
+describe("where the work is", () => {
+  it("reports a checkout the install had nothing to do in", async () => {
+    const stub = freshWorkspace("checkout-no-lockfile");
+    const dir = "/workspace/spike";
+    // A repository with a README and no `package.json` — the exact shape that
+    // was permanently undelegatable.
+    await seedGitCheckout(stub, dir);
+
+    await stub.noteCheckout({ dir, kind: "repo", repo: "acme/spike" });
+    const state = await stub.startInstall({ dir });
+
+    // The install correctly has nothing to do...
+    expect(state.state).toBe("skipped");
+    // ...and that must not be the same thing as having nowhere to work.
+    expect(await stub.checkoutDir()).toBe(dir);
+  });
+
+  /**
+   * The claim being made is "there is a git repository at this path", not "this
+   * path was written down once". Only a probe can support the first, and the
+   * difference is what a session's cwd and a `git reset --hard` both depend on.
+   */
+  it("stops reporting a checkout that is no longer there", async () => {
+    const stub = freshWorkspace("checkout-vanished");
+    const dir = "/workspace/gone";
+    await seedGitCheckout(stub, dir);
+    await stub.noteCheckout({ dir, kind: "repo", repo: "acme/gone" });
+    expect(await stub.checkoutDir()).toBe(dir);
+
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    await ws.fs.rm(`${dir}/.git`, { recursive: true });
+
+    // The record still says `dir`. The answer is `undefined` anyway, because the
+    // record is where to look and `.git` is what makes it true.
+    expect(await stub.checkoutDir()).toBeUndefined();
+  });
+
+  /**
+   * The migration path. Workspaces deployed before the checkout record existed
+   * hold an install context and nothing else, and they must keep answering until
+   * their next clone writes a record — a fix that silently stranded every live
+   * checkout would be its own outage.
+   */
+  it("still answers for a workspace that predates the record", async () => {
+    const stub = freshWorkspace("checkout-legacy");
+    const dir = "/workspace/legacy";
+    await seedGitCheckout(stub, dir);
+
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.put("install:context", {
+        dir,
+        fingerprint: null,
+        command: "npm ci --no-audit --no-fund",
+        startedAt: Date.now()
+      })
+    );
+
+    expect(await stub.checkoutDir()).toBe(dir);
+  });
+
+  /**
+   * A scratchpad is a repository whose remote is nowhere, and this is the line
+   * where that claim has to hold: it has no install to write a context as a side
+   * effect — a directory with no `package.json` is exactly what the resolver
+   * skips — so without the record it could be created and never delegated into.
+   * The feature is a live assertion of the fix.
+   */
+  it("reports a scratchpad the same way it reports a checkout", async () => {
+    const stub = freshWorkspace("checkout-scratch");
+    await seedGitCheckout(stub, SCRATCH_DIR);
+
+    const noted = await stub.noteCheckout({
+      dir: SCRATCH_DIR,
+      kind: "scratch"
+    });
+
+    // `present` is the same probe the delegation will make, reported at the
+    // moment the scratchpad is opened rather than a delegation later.
+    expect(noted).toEqual({ dir: SCRATCH_DIR, present: true });
+    expect(await stub.checkoutDir()).toBe(SCRATCH_DIR);
+  });
+
+  /** An empty workspace has nowhere to work, and must keep saying so. */
+  it("reports nothing for a workspace nothing has been opened in", async () => {
+    const stub = freshWorkspace("checkout-empty");
+    expect(await stub.checkoutDir()).toBeUndefined();
+  });
+});
+
 describe("arming a reinstall for a cold container", () => {
   const armed = (stub: DurableObjectStub) =>
     runInDurableObject(stub, (_instance, state) =>
@@ -248,7 +383,7 @@ describe("arming a reinstall for a cold container", () => {
     // answers `skip`, and the armed install proves nothing by never reaching a
     // spawn — which is exactly how the first draft of this passed while testing
     // half of what it claimed.
-    await seedCheckout(stub, dir);
+    await seedNodeCheckout(stub, dir);
     await runInDurableObject(stub, async (_instance, state) => {
       await state.storage.put("install", {
         state: "done",
@@ -355,7 +490,7 @@ describe("arming a reinstall for a cold container", () => {
   it("arms for a workspace whose last install failed", async () => {
     const stub = freshWorkspace("arm-after-failure");
     const dir = "/workspace/probe";
-    await seedCheckout(stub, dir);
+    await seedNodeCheckout(stub, dir);
 
     await runInDurableObject(stub, async (_instance, state) => {
       await state.storage.put("install", {

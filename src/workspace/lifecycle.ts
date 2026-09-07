@@ -7,6 +7,7 @@ import {
   WORKSPACE_DIR,
   type WorkspaceObjectBase
 } from "./object";
+import { SCRATCH_DIR, SCRATCH_REPO } from "./scratch";
 
 /**
  * The two things an agent with a workspace owes it, beyond the object itself.
@@ -61,14 +62,23 @@ export async function discardWorkingTree(config: {
     const exec = computerExec(
       workspaceContainer(config.binding, () => config.name)
     );
-    // The path the checkout is actually at, as the repo plugin reported it.
-    // Falling back to the conventional layout only when nothing has installed
-    // yet, in which case there is no working tree to discard either.
+    // The path the checkout is actually at, as the workspace recorded it and
+    // then probed for. Falling back to the conventional layout only for a
+    // workspace that predates that record, in which case the convention is what
+    // it was built on anyway.
+    //
+    // The scratchpad arm is not decoration. Its `repo` is a sentinel rather than
+    // an `owner/repo`, so the split below yields `/workspace/repo` — a directory
+    // that does not exist, in which `git clean` succeeds having cleaned nothing
+    // and the cancelled session's files survive into the next task. A fallback
+    // that is wrong only when it is unused is a trap, so it is stated.
     const dir =
       (await config.binding
         .get(config.binding.idFromName(config.name))
         .checkoutDir()) ??
-      `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`;
+      (config.repo === SCRATCH_REPO
+        ? SCRATCH_DIR
+        : `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`);
     await exec("git reset --hard && git clean -fdx -e node_modules", {
       cwd: dir
     });

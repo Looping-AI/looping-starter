@@ -84,7 +84,13 @@ describe("the main agent's tools", () => {
       "repo_status",
       "sb_exists",
       "sb_ls",
-      "sb_read"
+      "sb_read",
+      // Added deliberately, and this list is where that decision is recorded.
+      // It is the parent's other way to answer "where does this task happen" —
+      // a scratchpad rather than a checkout — and it is a workspace *selection*,
+      // which is why it sits with the parent rather than being lent to a
+      // subagent. Note what it did not bring with it: the three below.
+      "scratch_open"
     ]);
   });
 

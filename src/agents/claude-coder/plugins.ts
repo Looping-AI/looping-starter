@@ -10,6 +10,7 @@ import { activeRepo } from "@/workspace/active-repo";
 import { workspaceContainer } from "@/workspace/container";
 import { workspaceGit } from "@/workspace/git";
 import { workspaceName } from "@/workspace/object";
+import { scratch } from "@/workspace/scratch";
 import { claudeCodeConfig } from "./claude-code";
 
 /**
@@ -79,6 +80,12 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
     host.env.CLAUDE_CODER_WORKSPACE.get(
       host.env.CLAUDE_CODER_WORKSPACE.idFromName(name())
     );
+  // Hoisted because two plugins commit under it now. Same identity as `coder`'s,
+  // deliberately — see the comment on `author` in `src/agents/coder/plugins.ts`.
+  const author = {
+    name: host.env.GITHUB_NAME || "da-coder",
+    email: host.env.GITHUB_EMAIL
+  };
 
   return [
     /**
@@ -109,24 +116,46 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
       // Still needed, and now only for `repo_open_pr` — the one credentialed
       // call this side makes directly.
       token: () => host.env.GITHUB_TOKEN,
-      // Same identity as `coder`'s, deliberately — see the comment on `author`
-      // in `src/agents/coder/plugins.ts`.
-      author: {
-        name: host.env.GITHUB_NAME || "da-coder",
-        email: host.env.GITHUB_EMAIL
-      },
+      author,
 
       beforeCheckout: ({ owner, repo: repoName }) =>
         active.set(`${owner}/${repoName}`),
       afterCheckout: async ({ dir, repo: repoName }) => {
+        const ws = workspace();
+        // **Before the install, and that ordering is the fix.** Where the
+        // checkout is used to be recorded only as a side effect of installing
+        // into it, so a repository with no `package.json` — which the resolver
+        // skips — left `checkoutDir()` answering `undefined` and every
+        // `claude-code` delegation refusing a checkout that was sitting right
+        // there. Recording it first means no install outcome can erase it.
+        await ws.noteCheckout({
+          dir,
+          kind: "repo",
+          ...(repoName ? { repo: repoName } : {})
+        });
         // Returns as soon as the command is spawned — the workspace object
         // drains it. Blocking here would put a 225-second install inside a model
         // turn, which is the failure this whole arrangement avoids.
-        await workspace().startInstall({
+        await ws.startInstall({
           dir,
           ...(repoName ? { repo: repoName } : {})
         });
       }
+    }),
+    /**
+     * A place to work when the work is not a repository.
+     *
+     * Next to `repo` because it answers the same question — *where does this
+     * task happen* — and because the two are alternatives: a task opens a
+     * checkout or a scratchpad, never both. It shares `repo`'s shell, its author
+     * identity and its workspace thunk, so there is one answer to each of those
+     * rather than a second one drifting alongside.
+     */
+    scratch({
+      exec: computerExec(config),
+      workspace,
+      active,
+      author
     }),
     /**
      * Episodic memory, which the coder deliberately does without.

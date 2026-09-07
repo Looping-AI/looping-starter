@@ -263,17 +263,30 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
      * Where the checkout is — resolved **before** the workspace is opened, so a
      * subtask with nothing to work on costs one RPC rather than a container.
      *
-     * From the workspace object, never from the brief: it is the path the repo
-     * plugin reported and the install context persisted, so it is exact and a
-     * model cannot point a session somewhere else. Undefined means nothing has
-     * been cloned, which is a wiring-order mistake the parent's soul is told to
-     * avoid — so it fails with that sentence rather than guessing a path.
+     * From the workspace object, never from the brief: it is the path a checkout
+     * was recorded at and `.git` was found at, so it is exact and a model cannot
+     * point a session somewhere else. Undefined means there is no checkout,
+     * which is a wiring-order mistake the parent's soul is told to avoid — so it
+     * fails with that sentence rather than guessing a path.
      */
     const dir = cursor ? undefined : await stub.checkoutDir();
     if (!cursor && !dir) {
+      /**
+       * The advisories are worth the extra RPC **here specifically**.
+       *
+       * They are already fetched a few lines below for a session that starts,
+       * and were unreachable on this path — so a workspace that is full, or
+       * whose install broke, refused with a sentence about cloning and no word
+       * about the actual condition. That is the shape of failure this whole
+       * refusal exists to avoid. Only on the way to failing, so the "one RPC
+       * rather than a container start" property of the check is kept.
+       */
+      const note = sessionAdvisory(await stub.advisories());
       return this.#failed(
         "there is no checkout in this workspace yet, so there is nothing to " +
-          "work on. Clone the repository before delegating."
+          "work on. Clone a repository with `repo_clone`, or open a scratchpad " +
+          "with `scratch_open`, before delegating." +
+          (note ? `\n\n${note}` : "")
       );
     }
 
