@@ -66,9 +66,9 @@ describe("finalRoundNote", () => {
 
   it("never tells a stalled round its budget is spent", () => {
     // The reason this takes a reason at all. A task the loop stopped for want of
-    // progress still has most of its turns, and a model told otherwise does not
-    // just hold a wrong belief — it hands that belief to the user as the
-    // explanation. The run this was written for had 16 of 60 turns left.
+    // progress still has budget left, and a model told otherwise does not just
+    // hold a wrong belief — it hands that belief to the user as the explanation
+    // for what went wrong.
     const note = finalRoundNote(limits, "no-progress");
     expect(note).not.toContain("budget");
     expect(note).not.toContain("20 turns");
@@ -79,9 +79,9 @@ describe("finalRoundNote", () => {
 
   it("forbids the reply that promises another attempt", () => {
     // `final_reply` ends the task; nothing runs after it. A round stopped
-    // *because* retrying changed nothing is the last place to announce a retry,
-    // and "announcing is not doing" is the failure mode the contract above
-    // already spends three paragraphs on.
+    // *because* retrying changed nothing is the last place to announce a retry —
+    // "announcing is not doing", which the round contract above already guards
+    // for the ordinary case.
     expect(finalRoundNote(limits, "no-progress")).toContain(
       "Do not say you will try again"
     );

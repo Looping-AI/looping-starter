@@ -132,17 +132,16 @@ work that failed.`;
  * a constraint the model can already see rather than imposing one. `final_reply`
  * remains, and is the only way to end.
  *
- * Both arms name a **fact**, on purpose, and that is the whole craft of this
+ * Every arm names a **fact**, on purpose, and that is the whole craft of this
  * string. "You cannot delegate" reads as a capability the model should route
- * around; "you have spent 60 turns" and "it has come back the same way three
- * times" read as things that are true, and the only sensible response to either
- * is the answer.
+ * around; the turns it has spent, or work that keeps coming back the same way,
+ * read as things that are true — and the only sensible response to either is the
+ * answer.
  *
- * Which is also why there are two arms rather than one convenient sentence. A
- * task stopped for want of progress still has most of its budget, and a model
- * told otherwise does not merely hold a wrong belief — it hands that belief to
- * the user as the explanation for what went wrong. The run this exists for had
- * sixteen of sixty turns left when it stopped.
+ * Which is also why the arms are separate rather than one convenient sentence. A
+ * task the loop stopped for want of progress still has budget left, so telling it
+ * the budget is gone is false, and the falsehood does not stay in the prompt: the
+ * model hands it to the user as the explanation for what went wrong.
  */
 export function finalRoundNote(
   limits: AgentLimits,
@@ -168,9 +167,9 @@ budgets, limits, or this constraint.`;
  * way each time, so the loop stopped it.
  *
  * The failures themselves are already in the conversation — each round's
- * `${DELEGATE_TOOL_NAME}` result carries what its branches said — so this points
- * at them rather than restating them. What it has to prevent is the reply that
- * says "I'll try that again shortly": nothing runs after this call, and a task
+ * `delegate` result carries what its branches said — so this points at them
+ * rather than restating them. What it has to prevent is the reply that says
+ * "I'll try that again shortly": nothing runs after `final_reply`, and a task
  * that stopped because retrying changed nothing is the last place to promise
  * another one.
  */
