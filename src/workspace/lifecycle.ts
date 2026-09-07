@@ -79,9 +79,32 @@ export async function discardWorkingTree(config: {
       (config.repo === SCRATCH_REPO
         ? SCRATCH_DIR
         : `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`);
-    await exec("git reset --hard && git clean -fdx -e node_modules", {
-      cwd: dir
-    });
+    /**
+     * Sequenced, not chained — `;` rather than `&&`, and that is the whole
+     * comment.
+     *
+     * The two halves discard different things and neither depends on the other
+     * succeeding. `reset` fails outright on a repository with no resolvable
+     * `HEAD`, and chaining makes that failure skip the `clean` — so the branch
+     * that removes untracked files, which is where an abandoned run's output
+     * actually is, never runs precisely when the tree is least trustworthy.
+     */
+    const discarded = await exec(
+      "git reset --hard; git clean -fdx -e node_modules",
+      { cwd: dir }
+    );
+    // The clean is the last command, so this is its status. Reported because
+    // this path is best-effort and otherwise silent: the tree the next task
+    // starts from is whatever was left here.
+    if (!discarded.success) {
+      console.warn(
+        `[${config.label}] the working tree was not fully discarded`,
+        {
+          dir,
+          stderr: discarded.stderr.trim().slice(0, 500)
+        }
+      );
+    }
   } catch (err) {
     console.warn(`[${config.label}] could not discard the working tree`, {
       err: String(err)

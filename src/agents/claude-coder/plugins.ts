@@ -122,12 +122,10 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
         active.set(`${owner}/${repoName}`),
       afterCheckout: async ({ dir, repo: repoName }) => {
         const ws = workspace();
-        // **Before the install, and that ordering is the fix.** Where the
-        // checkout is used to be recorded only as a side effect of installing
-        // into it, so a repository with no `package.json` — which the resolver
-        // skips — left `checkoutDir()` answering `undefined` and every
-        // `claude-code` delegation refusing a checkout that was sitting right
-        // there. Recording it first means no install outcome can erase it.
+        // Before the install, and never inside it: an install is conditional
+        // where a checkout is not, so no install outcome may decide whether the
+        // path is recorded. The reasoning is on `noteCheckout` in
+        // `src/workspace/object.ts`.
         await ws.noteCheckout({
           dir,
           kind: "repo",

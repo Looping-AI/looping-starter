@@ -9,13 +9,11 @@ import type { WorkspaceObjectBase } from "./object";
  *
  * `@dynamicagents/plugins/scratch` owns what a scratchpad is — a git repository
  * with no remote, its empty initial commit, the reset, the words the model
- * reads. None of that is specific to this deployment, and it sat here for one
- * revision before that was obvious.
+ * reads. None of that is specific to this deployment.
  *
- * What is left is the half that genuinely is ours, and it is the half the plugin
- * cannot have: **which Durable Object a scratchpad lives in, and what records
- * that it exists.** Both go through the plugin's two hooks, the same seam
- * `/repo` uses for the same reason.
+ * What is here is the half the plugin cannot have: **which Durable Object a
+ * scratchpad lives in, and what records that it exists.** Both go through the
+ * plugin's two hooks, the same seam `/repo` uses for the same reason.
  */
 
 /**
@@ -52,13 +50,13 @@ export const SCRATCH_DIR = DEFAULT_SCRATCH_DIR;
  * scratchpad would rely solely on its own seven-day alarm with no backstop, which
  * is the state the accidental `<unassigned>` workspace is in.
  *
- * `afterOpen` is the other half of the fix this shipped alongside. `checkoutDir()`
- * answers from the checkout record, and a scratchpad has no install to write one
- * as a side effect — a directory with no `package.json` is exactly what the
- * install resolver skips. The `present` it reports back is the same probe the
- * delegation will make, so a workspace that cannot see the tree says so in this
- * tool's own result rather than in a subtask that refuses a scratchpad the model
- * was just told it had opened.
+ * `afterOpen` is what makes a scratchpad reachable at all. `checkoutDir()` in
+ * `./object.ts` answers from the checkout record, and a scratchpad has nothing else that would
+ * write one — a directory with no `package.json` is exactly what the install
+ * resolver skips. The `present` it reports back is the same probe the delegation
+ * will make, so a workspace that cannot see the tree says so in this tool'"'"'s own
+ * result rather than in a subtask refusing a scratchpad the model was just told
+ * it had opened.
  */
 export function hostScratch(config: {
   exec: ReturnType<typeof computerExec>;

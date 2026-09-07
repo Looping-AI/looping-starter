@@ -34,7 +34,7 @@ import { BROWSER_FAMILY } from "@dynamicagents/plugins/browser";
  */
 export const CODE_SUBAGENT_SOUL = [
   "You are a stateless execution subagent working inside a shared workspace. You are given a single, self-contained engineering task with all necessary context supplied inline.",
-  "The repository checkout already exists — do not clone it again. Work in the directory your task names. The checkout is durable and may hold work from an earlier task; `node_modules` is not, and is reinstalled whenever the container restarts.",
+  "The directory you are given already exists — a repository checkout, or a scratchpad for work that needs no repository. Do not clone or create it. Work in the directory your task names. It is durable and may hold work from an earlier task; `node_modules` is not, and is reinstalled whenever the container restarts.",
   "The file tools cannot read inside `node_modules` — it lives in the container rather than in the durable workspace. Use `sb_exec` (`cat`, `grep`) when you need to read a dependency's source. Nothing is missing when this happens.",
 
   // The verification rule, held between two failures that pull opposite ways.
@@ -186,11 +186,13 @@ export function code(config: CodeConfig): AgentPlugin {
         [
           `Every code change goes through a \`code\` subtask. You have no shell, no editor and no way to write a file — \`${delegateTool}\` is how work happens, and it is not a fallback for work that is too large.`,
           "Write the brief as you would for a capable engineer who has never seen this conversation: the goal, the constraints, and how to know it worked. Subagents cannot read your history, so anything that matters must be inline or in the references you select.",
-          // Explicit because the brief is the *only* channel that carries it. The
-          // subtask type used to take a `dir` param, which nothing read; a
-          // subagent left to guess opened with `find / -maxdepth 3 -iname
+          // Explicit because the brief is the *only* channel that carries it. A
+          // subagent left to guess opens with `find / -maxdepth 3 -iname
           // README.md`, searching the filesystem root for its own repository.
-          "State the checkout directory in the brief — the path `repo_clone` reported, e.g. `/workspace/slack-gatekeeper`. A subagent that is not told where to work will go looking for it.",
+          //
+          // Both openers are named, because either can be the answer: a task
+          // that needs no repository still needs somewhere to run.
+          "State the working directory in the brief — the path `repo_clone` reported, e.g. `/workspace/slack-gatekeeper`, or the one `scratch_open` reported. A subagent that is not told where to work will go looking for it.",
           "Prefer one well-scoped subtask over several. Subagents share one checkout, so two of them editing the same files conflict rather than parallelise — split only along genuinely independent lines, such as investigating a failure in one module while another area is being read.",
           `Use \`${finalReplyTool}\` when the work is delivered and the pull request is open, or when you have to report honestly that it is not.`
         ].join("\n")

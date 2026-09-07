@@ -221,14 +221,8 @@ describe("executeChunk refuses to guess", () => {
 
   it("fails with an ordering sentence when nothing has been cloned", async () => {
     // A real workspace, reachable and empty: `checkoutDir()` has nothing to
-    // report because nothing has been opened in it.
-    //
-    // **This test still passing is half of the proof for the checkout record.**
-    // The refusal it asserts is correct here and was wrong for every non-Node
-    // repository, and the two were indistinguishable from the outside — an
-    // empty workspace and a perfectly good checkout the install had skipped
-    // both answered `undefined`. So it is kept exactly as it was, next to the
-    // case that used to be caught by it wrongly.
+    // report because nothing has been opened in it. The refusal is correct here
+    // and wrong for the case below, which is why the two are specified together.
     const workspace = freshWorkspace("no-checkout");
     const name = await runInDurableObject(workspace, (_i, state) =>
       state.id.toString()
@@ -251,18 +245,17 @@ describe("executeChunk refuses to guess", () => {
 });
 
 /**
- * The other side of the refusal above, and the one the incident turned on.
+ * The other side of the refusal above: a checkout the install resolver had
+ * nothing to do in is still a checkout, and this gate must not confuse the two.
  *
- * A checkout the install resolver had nothing to do in is still a checkout. It
- * used to be indistinguishable from an empty workspace here, because the path
- * this gate reads was written only by an install that actually ran — so a
- * repository holding a `README.md` and no `package.json` was refused thirteen
- * times in twelve minutes for a checkout that was sitting right there
- * (`Debug.md` §3, RC-1).
+ * The pair is the specification. An empty workspace and a checkout without a
+ * lockfile are indistinguishable to a gate reading a path that only an install
+ * writes, and one of those two answers is wrong in a way that costs a whole
+ * delegation every time.
  *
- * The assertion is negative on purpose. There is no container in this pool, so a
- * chunk that gets past the gate cannot go on to run a session — what is being
- * specified is that the gate is no longer what stops it.
+ * The assertion is negative on purpose: there is no container in this pool, so a
+ * chunk that gets past the gate cannot go on to run a session. What is specified
+ * is that the gate is not what stops it.
  */
 describe("a checkout with nothing to install", () => {
   it("is not mistaken for an empty workspace", async () => {

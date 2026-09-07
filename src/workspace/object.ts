@@ -121,23 +121,22 @@ export function workspaceName(callerKey: string, repo?: string): string {
 /**
  * The key the checkout record lives under.
  *
- * Deliberately **not** derived from {@link INSTALL_KEY}. What is on disk and
- * what was installed into it are two different facts with two different
- * lifetimes, and the whole reason this key exists is that they were one record
- * for a while — see {@link WorkspaceObjectBase.noteCheckout}.
+ * Deliberately **not** derived from {@link INSTALL_KEY}: what is on disk and what
+ * was installed into it have different lifetimes, and one record cannot answer
+ * both. See {@link WorkspaceObjectBase.noteCheckout}.
  */
 const CHECKOUT_KEY = "checkout";
 
 /**
  * What is checked out here, recorded by whoever put it there.
  *
- * `kind` is the one field with no other home. A scratchpad and a clone are the
- * same shape on disk — a directory with a `.git` in it — and everything that
- * reads this record needs the same answer from both. What differs is what may be
- * *said* about them: a scratchpad has no remote, so "nothing was pushed" is a
- * fact rather than a failure. `repo` is absent for one, which would make the
- * distinction inferrable, but inferring an identity from a missing field is how
- * `checkoutDir` came to mean two things at once.
+ * `kind` is the one field worth arguing for. A scratchpad and a clone are the
+ * same shape on disk — a directory with a `.git` in it — and every reader of this
+ * record wants the same answer from both. What differs is what may be *said*
+ * about them: a scratchpad has no remote, so "nothing was pushed" is a fact
+ * rather than a failure. `repo` being absent for one would make that inferrable,
+ * but an identity inferred from a missing field is a second meaning for a field
+ * that already has one.
  */
 interface CheckoutRecord {
   dir: string;
@@ -1249,16 +1248,15 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       };
       await this.#install.write(state);
       /**
-       * The one branch through this method that used to say nothing.
+       * The common branch, and the one whose absence is indistinguishable from
+       * never having been called.
        *
-       * Every other path here logs — an install already in flight, a full
-       * workspace, a spawn that failed, each outcome of the drain. This one
-       * returned in silence, and it is the *common* branch: any checkout without
-       * a `package.json` takes it. When it also stopped `checkoutDir` answering,
-       * the only evidence that it had run at all was a three-day server-side
-       * grep coming back empty against five traced `startInstall` calls. A skip
-       * is routine and this line is cheap; proving one happened should not need
-       * an argument from absence.
+       * Every other outcome here leaves a line — an install in flight, a full
+       * workspace, a spawn that failed, each end of the drain — so a workspace
+       * that skipped and a workspace that never installed read identically in the
+       * logs, and any checkout without a `package.json` takes this path. A skip
+       * is routine; establishing that one happened should not require an argument
+       * from silence.
        */
       console.info(`[${this.#tag}] install skipped`, {
         id: this.ctx.id.toString(),
@@ -1380,16 +1378,21 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * only once a tree is established, and `scratch_open`, which fires once
    * `git init` has exited 0.
    *
-   * It exists because this fact used to be a side effect of installing. The only
-   * `putContext` call is on the `run` path of {@link #beginInstall}, so the
-   * `skip` branch — taken for every checkout without a `package.json` — returned
-   * without writing one, and {@link checkoutDir} answered `undefined` for a
-   * repository that had cloned perfectly. A `claude-code` subtask reads that as
-   * "nothing has been cloned" and refuses, which is a repository that can be
-   * cloned and never worked on. The install still keeps its own context: what to
-   * re-run on a cold container is a different question from what is on disk, and
-   * one record answering both is what made a routine skip look like an empty
-   * workspace.
+   * **This is the canonical explanation of why the checkout is recorded apart
+   * from the install**; call sites point here rather than restating it.
+   *
+   * An install is conditional and a checkout is not. `resolveInstallCommand`
+   * skips a checkout it finds nothing to install in — any without a
+   * `package.json` — and a path written only as part of an install is therefore
+   * missing exactly there. What that costs is not a missing optimisation:
+   * {@link checkoutDir} is how a delegated session is told where to work, so a
+   * repository can clone perfectly, report itself correctly through the repo
+   * tools, and never be worked in.
+   *
+   * The install keeps its own context, and should. What to re-run on a cold
+   * container is a different question from what is on disk, with a different
+   * lifetime; one record cannot answer both without one of the answers being
+   * wrong somewhere.
    *
    * Returns the probe as well as the path, so a caller learns in one round trip
    * whether the tree is visible rather than discovering it a delegation later.
@@ -1434,18 +1437,21 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * longer a checkout.
    *
    * The fallback to the install context is a **migration**, not a second source
-   * of truth: workspaces provisioned before {@link noteCheckout} existed have
-   * only that, and they heal on their next checkout. It can go once no live
-   * workspace predates this record — which the log line below is how to tell.
+   * of truth, and it is a partial one: it reaches a workspace whose install ran,
+   * and cannot reach one whose install was skipped, since that is the case with
+   * no context to fall back to either. Those answer `undefined` until their next
+   * checkout records one — which `repo_clone` does on any tree it can fetch and
+   * reset, and cannot do on a tree it refuses to touch because it is dirty. The
+   * whole fallback can go once no live workspace predates the record.
    */
   async checkoutDir(): Promise<string | undefined> {
     const record = await this.ctx.storage.get<CheckoutRecord>(CHECKOUT_KEY);
     const dir = record?.dir ?? (await this.#install.context())?.dir;
     if (!dir) return undefined;
     if (await this.#isCheckout(dir)) return dir;
-    // Silence here is what made the original fault a three-day investigation:
-    // the caller sees "nothing has been cloned" and has no way to tell that
-    // apart from a workspace nobody ever cloned into.
+    // Said out loud because the return value cannot say it: a caller reads
+    // `undefined` as "nothing has been cloned", which is also the right answer
+    // for a workspace nobody ever cloned into. Only this line separates them.
     console.warn(`[${this.#tag}] a recorded checkout is no longer there`, {
       id: this.ctx.id.toString(),
       dir,

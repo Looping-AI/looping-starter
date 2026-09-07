@@ -274,12 +274,14 @@ export class ClaudeCoderSubagent extends RecipeSubagentHost<Env> {
       /**
        * The advisories are worth the extra RPC **here specifically**.
        *
-       * They are already fetched a few lines below for a session that starts,
-       * and were unreachable on this path — so a workspace that is full, or
-       * whose install broke, refused with a sentence about cloning and no word
-       * about the actual condition. That is the shape of failure this whole
-       * refusal exists to avoid. Only on the way to failing, so the "one RPC
-       * rather than a container start" property of the check is kept.
+       * A refusal that names only the ordering mistake is the wrong sentence for
+       * a workspace that is full, or whose install broke: both refuse for a
+       * reason the model can act on, and neither is "you forgot to clone". The
+       * same call is made a few lines below for a session that does start, so
+       * this is the same fact reaching the one path that could not see it.
+       *
+       * Only on the way to failing, so the "one RPC rather than a container
+       * start" property of the check above is kept.
        */
       const note = sessionAdvisory(await stub.advisories());
       return this.#failed(

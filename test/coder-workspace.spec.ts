@@ -42,19 +42,15 @@ function storedInstall(stub: DurableObjectStub) {
  * Put a checkout in the workspace — a directory with a `.git` in it, and nothing
  * else.
  *
- * **The lockfile lives in {@link seedNodeCheckout}, and the split is the point.**
- * There used to be one helper and it wrote a `package.json` into every fixture,
- * for a good local reason: without one the resolver returns `skip` and
- * `startInstall` never reaches the spawn, so the spawn test would pass while
- * testing nothing. The cost of that convenience was invisible and total —
- * **every** workspace in this suite had dependencies to install, so the `skip`
- * branch was never on any test's path, and the fault it carried shipped under a
- * green suite. A repository with no `package.json` could be cloned and never
- * worked in.
+ * **Separate from {@link seedNodeCheckout}, and keeping them separate is the
+ * point.** A lockfile is what makes the install resolver act, so a fixture that
+ * writes one takes the `run` branch; a fixture that does not takes `skip`. A
+ * single helper doing both puts every workspace in this file on one of those
+ * paths and leaves the other untested — and `skip` is the branch that decides
+ * whether a repository can be worked in at all.
  *
- * So the two facts are now separate: this is a checkout, and that is a checkout
- * that installs. Tests that need the resolver to act reach for the second; every
- * other test gets the branch the suite could not previously see.
+ * So the two facts stay apart: this is a checkout, that is a checkout which
+ * installs. Reach for the second only where the resolver has to act.
  */
 async function seedGitCheckout(stub: DurableObjectStub, dir: string) {
   using ws = await getWorkspace(
@@ -261,24 +257,19 @@ describe("the install gate", () => {
  * container and is covered end to end.
  */
 /**
- * Where the work is, and the fault that made it mean something else.
+ * Where the work is — the question `checkoutDir()` answers, and the invariants
+ * that make its answer worth acting on.
  *
- * `checkoutDir()` used to read the *install context*, which is written on one
- * path only: the `run` branch of `#beginInstall`. The `skip` branch — taken for
- * every checkout the resolver finds nothing to install in — returned without
- * writing one. So a repository with no `package.json` cloned perfectly, reported
- * itself correctly through `repo_clone` and `repo_status`, and answered
- * `undefined` to the one question a delegation asks: where do I work? The
- * `claude-code` subagent reads that as "nothing has been cloned" and refuses,
- * permanently, for that repository.
+ * Two properties, and each has a test here because each can be lost on its own:
  *
- * It reached production and ran for twelve minutes on 2026-09-05, refusing
- * thirteen identical delegations against a repository holding only a `README.md`
- * (`Debug.md` §3, RC-1). The suite was green throughout, because every fixture
- * in it had a lockfile — see {@link seedGitCheckout}.
- *
- * The first test below fails on the unfixed object. The rest are what stop the
- * fix being "write the same value one line earlier".
+ * - **A checkout is recorded whether or not anything was installed into it.**
+ *   The install resolver skips a checkout it finds nothing to do in, and that
+ *   says nothing about whether there is a checkout. See `noteCheckout` in
+ *   `src/workspace/object.ts` for why the two records are separate.
+ * - **The answer is probed, not remembered.** A recorded path is where to look;
+ *   `.git` being there is what makes it true. A session's cwd and the
+ *   cancellation `git reset --hard` both act on it, and neither recovers from a
+ *   confident wrong answer.
  */
 describe("where the work is", () => {
   it("reports a checkout the install had nothing to do in", async () => {
