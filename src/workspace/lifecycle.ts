@@ -7,6 +7,7 @@ import {
   WORKSPACE_DIR,
   type WorkspaceObjectBase
 } from "./object";
+import { SCRATCH_DIR, SCRATCH_REPO } from "./scratch";
 
 /**
  * The two things an agent with a workspace owes it, beyond the object itself.
@@ -61,17 +62,49 @@ export async function discardWorkingTree(config: {
     const exec = computerExec(
       workspaceContainer(config.binding, () => config.name)
     );
-    // The path the checkout is actually at, as the repo plugin reported it.
-    // Falling back to the conventional layout only when nothing has installed
-    // yet, in which case there is no working tree to discard either.
+    // The path the checkout is actually at, as the workspace recorded it and
+    // then probed for. Falling back to the conventional layout only for a
+    // workspace that predates that record, in which case the convention is what
+    // it was built on anyway.
+    //
+    // The scratchpad arm is not decoration. Its `repo` is a sentinel rather than
+    // an `owner/repo`, so the split below yields `/workspace/repo` — a directory
+    // that does not exist, in which `git clean` succeeds having cleaned nothing
+    // and the cancelled session's files survive into the next task. A fallback
+    // that is wrong only when it is unused is a trap, so it is stated.
     const dir =
       (await config.binding
         .get(config.binding.idFromName(config.name))
         .checkoutDir()) ??
-      `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`;
-    await exec("git reset --hard && git clean -fdx -e node_modules", {
-      cwd: dir
-    });
+      (config.repo === SCRATCH_REPO
+        ? SCRATCH_DIR
+        : `${WORKSPACE_DIR}/${config.repo?.split("/")[1] ?? "repo"}`);
+    /**
+     * Sequenced, not chained — `;` rather than `&&`, and that is the whole
+     * comment.
+     *
+     * The two halves discard different things and neither depends on the other
+     * succeeding. `reset` fails outright on a repository with no resolvable
+     * `HEAD`, and chaining makes that failure skip the `clean` — so the branch
+     * that removes untracked files, which is where an abandoned run's output
+     * actually is, never runs precisely when the tree is least trustworthy.
+     */
+    const discarded = await exec(
+      "git reset --hard; git clean -fdx -e node_modules",
+      { cwd: dir }
+    );
+    // The clean is the last command, so this is its status. Reported because
+    // this path is best-effort and otherwise silent: the tree the next task
+    // starts from is whatever was left here.
+    if (!discarded.success) {
+      console.warn(
+        `[${config.label}] the working tree was not fully discarded`,
+        {
+          dir,
+          stderr: discarded.stderr.trim().slice(0, 500)
+        }
+      );
+    }
   } catch (err) {
     console.warn(`[${config.label}] could not discard the working tree`, {
       err: String(err)

@@ -84,7 +84,12 @@ describe("the main agent's tools", () => {
       "repo_status",
       "sb_exists",
       "sb_ls",
-      "sb_read"
+      "sb_read",
+      // The parent's other way to answer "where does this task happen" — a
+      // scratchpad rather than a checkout. It sits with the parent because it is
+      // a workspace *selection*: a subagent holding it could re-point the
+      // workspace mid-run. It brings no shell with it; see the case below.
+      "scratch_open"
     ]);
   });
 

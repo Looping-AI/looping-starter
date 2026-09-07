@@ -100,13 +100,50 @@ export const WORKSPACE_DIR = "/workspace";
  * and the cancellation path. A pipe rather than a slash, so the caller half
  * cannot forge a repository boundary by containing one.
  *
- * `repo` is undefined only before the first `repo_clone` of a session — the
- * repository is model-chosen, so there is genuinely nothing to key on until it
- * has chosen. That window resolves to a caller-level workspace, which is never
- * cloned into: `beforeCheckout` sets the repository before any git runs.
+ * `repo` is undefined only before the first `repo_clone` or `scratch_open` of a
+ * session — what a task works in is model-chosen, so there is genuinely nothing
+ * to key on until it has chosen. That window resolves to a caller-level
+ * workspace, which is never worked in: `beforeCheckout` sets the repository
+ * before any git runs, and `scratch_open` sets its sentinel before anything
+ * resolves a name.
+ *
+ * `repo` is not always a repository. `SCRATCH_REPO` in `./scratch.ts` passes
+ * through here as one, which is what keys a scratchpad to its own object and its
+ * own container — see that file for why a scratchpad is modelled as a repository
+ * whose remote is nowhere.
  */
 export function workspaceName(callerKey: string, repo?: string): string {
   return repo ? `${callerKey}|${repo}` : `${callerKey}|<unassigned>`;
+}
+
+// --- where the work is ------------------------------------------------------
+
+/**
+ * The key the checkout record lives under.
+ *
+ * Deliberately **not** derived from {@link INSTALL_KEY}: what is on disk and what
+ * was installed into it have different lifetimes, and one record cannot answer
+ * both. See {@link WorkspaceObjectBase.noteCheckout}.
+ */
+const CHECKOUT_KEY = "checkout";
+
+/**
+ * What is checked out here, recorded by whoever put it there.
+ *
+ * `kind` is the one field worth arguing for. A scratchpad and a clone are the
+ * same shape on disk — a directory with a `.git` in it — and every reader of this
+ * record wants the same answer from both. What differs is what may be *said*
+ * about them: a scratchpad has no remote, so "nothing was pushed" is a fact
+ * rather than a failure. `repo` being absent for one would make that inferrable,
+ * but an identity inferred from a missing field is a second meaning for a field
+ * that already has one.
+ */
+interface CheckoutRecord {
+  dir: string;
+  /** `owner/repo`, absent for a scratchpad. */
+  repo?: string;
+  kind: "repo" | "scratch";
+  at: number;
 }
 
 // --- what this object wakes for, and when ----------------------------------
@@ -1210,6 +1247,23 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
         reason: resolution.reason
       };
       await this.#install.write(state);
+      /**
+       * The common branch, and the one whose absence is indistinguishable from
+       * never having been called.
+       *
+       * Every other outcome here leaves a line — an install in flight, a full
+       * workspace, a spawn that failed, each end of the drain — so a workspace
+       * that skipped and a workspace that never installed read identically in the
+       * logs, and any checkout without a `package.json` takes this path. A skip
+       * is routine; establishing that one happened should not require an argument
+       * from silence.
+       */
+      console.info(`[${this.#tag}] install skipped`, {
+        id: this.ctx.id.toString(),
+        dir: req.dir,
+        ...(req.repo ? { repo: req.repo } : {}),
+        reason: resolution.reason
+      });
       return state;
     }
 
@@ -1317,15 +1371,125 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * Where the checkout actually is, as recorded when it was installed into.
+   * Record what was checked out here, and say whether it is actually visible.
    *
-   * The repo plugin reports the authoritative path in `RepoCheckout.dir` and
-   * `startInstall` persists it. Callers outside this object would otherwise
-   * re-derive it from the repository name, which is a second spelling of one
-   * path and drifts the moment a clone lands anywhere but `<workdir>/<repo>`.
+   * **The single writer of {@link CHECKOUT_KEY}**, called by the two paths that
+   * know a checkout landed: the repo plugin's `afterCheckout` hook, which fires
+   * only once a tree is established, and `scratch_open`, which fires once
+   * `git init` has exited 0.
+   *
+   * **This is the canonical explanation of why the checkout is recorded apart
+   * from the install**; call sites point here rather than restating it.
+   *
+   * An install is conditional and a checkout is not. `resolveInstallCommand`
+   * skips a checkout it finds nothing to install in — any without a
+   * `package.json` — and a path written only as part of an install is therefore
+   * missing exactly there. What that costs is not a missing optimisation:
+   * {@link checkoutDir} is how a delegated session is told where to work, so a
+   * repository can clone perfectly, report itself correctly through the repo
+   * tools, and never be worked in.
+   *
+   * The install keeps its own context, and should. What to re-run on a cold
+   * container is a different question from what is on disk, with a different
+   * lifetime; one record cannot answer both without one of the answers being
+   * wrong somewhere.
+   *
+   * Returns the probe as well as the path, so a caller learns in one round trip
+   * whether the tree is visible rather than discovering it a delegation later.
+   */
+  async noteCheckout(req: {
+    dir: string;
+    repo?: string;
+    kind: "repo" | "scratch";
+  }): Promise<{ dir: string; present: boolean }> {
+    await this.#touch();
+    const record: CheckoutRecord = {
+      dir: req.dir,
+      ...(req.repo ? { repo: req.repo } : {}),
+      kind: req.kind,
+      at: Date.now()
+    };
+    await this.ctx.storage.put(CHECKOUT_KEY, record);
+    const present = await this.#isCheckout(req.dir);
+    console.info(`[${this.#tag}] checkout recorded`, {
+      id: this.ctx.id.toString(),
+      dir: req.dir,
+      kind: req.kind,
+      ...(req.repo ? { repo: req.repo } : {}),
+      present
+    });
+    return { dir: req.dir, present };
+  }
+
+  /**
+   * Where the work is — a directory holding a git repository, or nothing.
+   *
+   * Two callers depend on that being the meaning rather than "a path somebody
+   * wrote down once": a Claude Code session takes it as its cwd, and
+   * `discardWorkingTree` runs `git reset --hard` in it. Both want the same
+   * question answered, and neither can recover from a confident wrong answer.
+   *
+   * So it is **probed, not remembered**. A record is where to look; `.git` being
+   * there is what makes the answer true. That costs one local read of this
+   * object's own SQLite — `.git` is durable, since `computerd` excludes only
+   * `node_modules` from the sync — and it is what turns a stale record into
+   * `undefined` instead of into a session started in a directory that is no
+   * longer a checkout.
+   *
+   * The fallback to the install context is a **migration**, not a second source
+   * of truth, and it is a partial one: it reaches a workspace whose install ran,
+   * and cannot reach one whose install was skipped, since that is the case with
+   * no context to fall back to either. Those answer `undefined` until their next
+   * checkout records one — which `repo_clone` does on any tree it can fetch and
+   * reset, and cannot do on a tree it refuses to touch because it is dirty. The
+   * whole fallback can go once no live workspace predates the record.
    */
   async checkoutDir(): Promise<string | undefined> {
-    return (await this.#install.context())?.dir;
+    const record = await this.ctx.storage.get<CheckoutRecord>(CHECKOUT_KEY);
+    const dir = record?.dir ?? (await this.#install.context())?.dir;
+    if (!dir) return undefined;
+    if (await this.#isCheckout(dir)) return dir;
+    // Said out loud because the return value cannot say it: a caller reads
+    // `undefined` as "nothing has been cloned", which is also the right answer
+    // for a workspace nobody ever cloned into. Only this line separates them.
+    console.warn(`[${this.#tag}] a recorded checkout is no longer there`, {
+      id: this.ctx.id.toString(),
+      dir,
+      recorded: record ? record.kind : "install-context",
+      // The rest of the record, because this line is read during an incident and
+      // "the checkout for acme/spike went missing forty minutes ago" is a
+      // different investigation from a bare path. It is also what these two
+      // fields are *for* — nothing else reads them, and a record carrying state
+      // nobody ever looks at is how the last one drifted.
+      ...(record?.repo ? { repo: record.repo } : {}),
+      ...(record ? { ageMs: Date.now() - record.at } : {})
+    });
+    return undefined;
+  }
+
+  /**
+   * Whether `dir` holds a git repository, as this object's own storage sees it.
+   *
+   * `.git` rather than the directory: an empty directory is not a checkout, and
+   * the two callers of {@link checkoutDir} both need git to be there — one to
+   * reset the tree, the other to run a session that will commit in it. It is
+   * also the one probe a scratchpad and a clone answer identically, which is
+   * what lets them share every path below this line.
+   */
+  async #isCheckout(dir: string): Promise<boolean> {
+    try {
+      return await pathExists(this.#workspace.fs, `${dir}/.git`);
+    } catch (err) {
+      // A read of local SQLite that threw says nothing about the tree. Treat it
+      // as absent: refusing a delegation costs a round, starting a session in a
+      // directory that may not exist costs the run.
+      console.warn(`[${this.#tag}] could not probe a checkout`, {
+        id: this.ctx.id.toString(),
+        dir,
+        err: String(err)
+      });
+      return false;
+    }
   }
 
   /**

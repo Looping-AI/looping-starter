@@ -5,6 +5,7 @@ import { createAgentRuntime } from "@dynamicagents/core";
 import type { PluginHost } from "@dynamicagents/core/host";
 import type { RecipeExecutionRequest } from "@dynamicagents/core/subtasks";
 import { makeDoHelpers } from "@dynamicagents/core/testing";
+import { getWorkspace } from "@cloudflare/computer";
 import {
   CLAUDE_CODE_TYPE,
   WORKSPACE_RUNTIME_KEY
@@ -220,7 +221,8 @@ describe("executeChunk refuses to guess", () => {
 
   it("fails with an ordering sentence when nothing has been cloned", async () => {
     // A real workspace, reachable and empty: `checkoutDir()` has nothing to
-    // report because no `repo_clone` has run against it.
+    // report because nothing has been opened in it. The refusal is correct here
+    // and wrong for the case below, which is why the two are specified together.
     const workspace = freshWorkspace("no-checkout");
     const name = await runInDurableObject(workspace, (_i, state) =>
       state.id.toString()
@@ -235,10 +237,68 @@ describe("executeChunk refuses to guess", () => {
 
     expect(outcome.done).toBe(true);
     if (outcome.done && outcome.result.status === "failed") {
-      expect(outcome.result.error).toMatch(/Clone the repository before/);
+      expect(outcome.result.error).toMatch(/Clone a repository with/);
     } else {
       expect.unreachable("a subtask with no checkout must fail");
     }
+  });
+});
+
+/**
+ * The other side of the refusal above: a checkout the install resolver had
+ * nothing to do in is still a checkout, and this gate must not confuse the two.
+ *
+ * The pair is the specification. An empty workspace and a checkout without a
+ * lockfile are indistinguishable to a gate reading a path that only an install
+ * writes, and one of those two answers is wrong in a way that costs a whole
+ * delegation every time.
+ *
+ * The assertion is negative on purpose: there is no container in this pool, so a
+ * chunk that gets past the gate cannot go on to run a session. What is specified
+ * is that the gate is not what stops it.
+ */
+describe("a checkout with nothing to install", () => {
+  it("is not mistaken for an empty workspace", async () => {
+    const dir = "/workspace/spike";
+    /**
+     * Addressed by **name**, not by id, because this is the one test in the file
+     * where the subagent has to reach the very object the test seeded.
+     * `freshStub` names its object with a UUID it does not hand back, and the
+     * facet resolves its workspace with `idFromName(runtime[…])` — so passing an
+     * id string there names a *different*, empty object. Which is harmless for
+     * the empty-workspace test above and would quietly gut this one.
+     */
+    const name = `test:skipped-install:${crypto.randomUUID()}`;
+    const workspace = env.CLAUDE_CODER_WORKSPACE.get(
+      env.CLAUDE_CODER_WORKSPACE.idFromName(name)
+    );
+
+    // A repository with git in it and no lockfile: cloned, recorded, and skipped
+    // by the resolver.
+    using ws = await getWorkspace(
+      workspace as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    await ws.fs.mkdir(`${dir}/.git`, { recursive: true });
+    await ws.fs.writeFile(`${dir}/.git/HEAD`, "ref: refs/heads/main\n");
+    await workspace.noteCheckout({ dir, kind: "repo", repo: "acme/spike" });
+    expect((await workspace.startInstall({ dir })).state).toBe("skipped");
+
+    const stub = freshSubagent("skipped-install");
+    const outcome = await runInDurableObject(
+      stub,
+      (instance: ClaudeCoderSubagent) =>
+        instance.executeChunk(request(), 0, { [WORKSPACE_RUNTIME_KEY]: name })
+    ).catch((err: unknown) => ({ thrown: String(err) }));
+
+    // However this chunk ends without a container, it must not end by claiming
+    // there is nothing to work on.
+    const said =
+      "thrown" in outcome
+        ? outcome.thrown
+        : outcome.done && outcome.result.status === "failed"
+          ? outcome.result.error
+          : "";
+    expect(said).not.toMatch(/Clone a repository with/);
   });
 });
 
