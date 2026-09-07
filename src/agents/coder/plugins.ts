@@ -7,7 +7,7 @@ import { activeRepo } from "@/workspace/active-repo";
 import { workspaceContainer } from "@/workspace/container";
 import { workspaceGit } from "@/workspace/git";
 import { workspaceName } from "@/workspace/object";
-import { scratch } from "@/workspace/scratch";
+import { hostScratch } from "@/workspace/scratch";
 import { code } from "./code";
 
 /**
@@ -177,7 +177,7 @@ export const parentPlugins = (host: PluginHost<Env>): AgentPlugin[] => {
      * identity and its workspace thunk, so there is one answer to each of those
      * rather than a second one drifting alongside.
      */
-    scratch({
+    hostScratch({
       exec: computerExec(config),
       workspace,
       active,
