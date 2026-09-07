@@ -1,7 +1,7 @@
 import type { AgentLimits } from "@dynamicagents/core";
 import { FINAL_REPLY_TOOL_NAME } from "@dynamicagents/core/agent";
 import { DELEGATE_TOOL_NAME } from "@dynamicagents/core/subtasks";
-import type { RoundPolicy } from "@dynamicagents/core/round";
+import type { FinalRoundReason, RoundPolicy } from "@dynamicagents/core/round";
 
 /**
  * The words a round agent says — the one part of the round loop core does not
@@ -127,16 +127,28 @@ work that failed.`;
 }
 
 /**
- * Appended when the Task has spent its budget. Neither `delegate` nor any work
- * tool is declared in that case, so this explains a constraint the model can
- * already see rather than imposing one. `final_reply` remains, and is the only
- * way to end.
+ * Appended when the round loop has stopped the Task and this round has to answer.
+ * Neither `delegate` nor any work tool is declared in that state, so this explains
+ * a constraint the model can already see rather than imposing one. `final_reply`
+ * remains, and is the only way to end.
  *
- * It names the budget on purpose. "You cannot delegate" reads as a capability the
- * model should route around; "you have spent N turns" reads as a fact, and the
- * only sensible response to it is the answer.
+ * Both arms name a **fact**, on purpose, and that is the whole craft of this
+ * string. "You cannot delegate" reads as a capability the model should route
+ * around; "you have spent 60 turns" and "it has come back the same way three
+ * times" read as things that are true, and the only sensible response to either
+ * is the answer.
+ *
+ * Which is also why there are two arms rather than one convenient sentence. A
+ * task stopped for want of progress still has most of its budget, and a model
+ * told otherwise does not merely hold a wrong belief — it hands that belief to
+ * the user as the explanation for what went wrong. The run this exists for had
+ * sixteen of sixty turns left when it stopped.
  */
-export function finalRoundNote(limits: AgentLimits): string {
+export function finalRoundNote(
+  limits: AgentLimits,
+  reason: FinalRoundReason
+): string {
+  if (reason === "no-progress") return noProgressNote();
   return `
 
 # Your budget is spent
@@ -149,6 +161,37 @@ or take any other action.
 Give them everything you did manage. If something is missing or failed, say so
 plainly in one short sentence — do not apologize at length, and do not describe
 budgets, limits, or this constraint.`;
+}
+
+/**
+ * The other arm: the work went out several times and came back failing the same
+ * way each time, so the loop stopped it.
+ *
+ * The failures themselves are already in the conversation — each round's
+ * `${DELEGATE_TOOL_NAME}` result carries what its branches said — so this points
+ * at them rather than restating them. What it has to prevent is the reply that
+ * says "I'll try that again shortly": nothing runs after this call, and a task
+ * that stopped because retrying changed nothing is the last place to promise
+ * another one.
+ */
+function noProgressNote(): string {
+  return `
+
+# This keeps coming back the same way
+
+The work you handed out has now failed the same way several times over, so this is
+the last round: another attempt would return what the ones above it returned.
+You have no tools left except one — call \`${FINAL_REPLY_TOOL_NAME}\` now.
+You cannot delegate, look anything up, or take any other action.
+
+Tell the user plainly what you could not do and what stopped you, in one or two
+sentences and in your own voice. What came back is in this conversation above, and
+the part of it that explains the wall is what they need — not an apology, and not
+the details of how the work was run. Give them everything you did manage.
+
+Do not say you will try again, keep working, or come back with more: nothing runs
+after this message, and saying otherwise leaves them waiting for something that is
+not coming.`;
 }
 
 /** The round policy this Worker's delegating agents run under. */
