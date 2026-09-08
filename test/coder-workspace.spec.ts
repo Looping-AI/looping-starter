@@ -679,3 +679,97 @@ describe("trusting the interception CA", () => {
     }
   });
 });
+
+/**
+ * What the scheduler rewrite could break quietly, and what a passing suite would
+ * not otherwise notice.
+ *
+ * The predecessor kept one storage row per *key*, so re-arming a deadline was an
+ * upsert and re-arming it a thousand times cost nothing. A schedule is a row the
+ * scheduler mints an id for, so the same code against the same intent leaves a
+ * thousand rows unless each one cancels the last — and `#touch()` runs on every
+ * entry point, which makes this the busiest path in the object.
+ *
+ * Counted through storage rather than through a scheduler handle, because the
+ * count is the durable consequence and a handle would only report what the code
+ * under test already believes.
+ */
+describe("the idle deadlines, over a scheduler that has no upsert", () => {
+  /** The same hook anything reaching this object goes through. */
+  async function touch(stub: DurableObjectStub) {
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+  }
+
+  const schedules = (stub: DurableObjectStub) =>
+    runInDurableObject(stub, (_instance, state) => [
+      ...state.storage.sql
+        .exec("SELECT id, callback FROM cf_agents_schedules")
+        .toArray()
+    ]);
+
+  it("keeps one row per deadline however often the workspace is touched", async () => {
+    const stub = freshWorkspace("touch-repeatedly");
+
+    await touch(stub);
+    const afterOne = await schedules(stub);
+
+    await touch(stub);
+    await touch(stub);
+    await touch(stub);
+    const afterFour = await schedules(stub);
+
+    // The two idle timers, and no more of them for three further touches.
+    expect(afterFour).toHaveLength(afterOne.length);
+    const callbacks = afterFour.map((row) => row.callback).sort();
+    expect(callbacks).toContain("idleReclaim");
+    expect(callbacks).toContain("containerIdle");
+  });
+
+  it("moves the deadline rather than adding beside it", async () => {
+    const stub = freshWorkspace("touch-moves");
+
+    await touch(stub);
+    const first = await schedules(stub);
+    const firstIdle = first.find((row) => row.callback === "idleReclaim");
+    expect(firstIdle).toBeDefined();
+
+    await touch(stub);
+    const second = await schedules(stub);
+    const secondIdle = second.find((row) => row.callback === "idleReclaim");
+
+    // A different row, not a second one: the id changes because the deadline was
+    // cancelled and recreated, and the count does not.
+    expect(secondIdle).toBeDefined();
+    expect(secondIdle!.id).not.toBe(firstIdle!.id);
+    expect(second.filter((row) => row.callback === "idleReclaim")).toHaveLength(
+      1
+    );
+  });
+
+  /**
+   * A reclaimed workspace must not wake again, and must still work if it is
+   * used again — a reclaim empties the object, it does not evict the isolate.
+   *
+   * `deleteAll()` takes the scheduler's SQL tables with it, and a lifecycle that
+   * has already started will not migrate them a second time. So without the
+   * re-migration in `reclaimIfIdle` the first touch after a reclaim schedules
+   * against a table that is no longer there, and this test is the only thing
+   * between that and a workspace that stops arming its timers for good.
+   */
+  it("leaves no schedule behind after a reclaim, and still schedules after one", async () => {
+    const stub = freshWorkspace("reclaim-clears");
+    await touch(stub);
+    expect((await schedules(stub)).length).toBeGreaterThan(0);
+
+    expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(true);
+    expect(await schedules(stub)).toHaveLength(0);
+
+    await touch(stub);
+    const again = (await schedules(stub)).map((row) => row.callback).sort();
+    expect(again).toContain("idleReclaim");
+    expect(again).toContain("containerIdle");
+  });
+});

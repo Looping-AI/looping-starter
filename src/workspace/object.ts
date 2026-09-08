@@ -1,9 +1,13 @@
 import { DurableObject, tracing } from "cloudflare:workers";
 // One Durable Object has one alarm, and this object wakes for five different
-// reasons. `WakeMap` is the multiplexer; what it does *not* own is what this
-// object owes on waking, which is `#dispatch` below.
-import { WakeMap, type WakeIntent } from "@dynamicagents/core/alarm";
-// The sibling barrel: `WakeMap` owns *when* this object wakes, `JobLifecycle`
+// reasons. A `Scheduler` is the multiplexer; what it does *not* own is what this
+// object owes on waking, which is the callbacks registered on it below.
+import {
+  installScheduler,
+  namedDeadline,
+  type Deadline
+} from "@dynamicagents/core/alarm";
+// The sibling barrel: the scheduler owns *when* this object wakes, `JobLifecycle`
 // owns what the install owes on waking.
 import { JobLifecycle, type JobContext } from "@dynamicagents/core/job";
 import {
@@ -199,8 +203,15 @@ interface InstallContext extends JobContext {
   command: string;
 }
 
-/** The wake intent that reclaims a workspace nobody has touched. */
-const IDLE_RECLAIM = "idle-reclaim";
+/**
+ * Where the idle-reclaim deadline keeps its current schedule id.
+ *
+ * A schedule is a row the scheduler mints an id for, not a keyed upsert — so
+ * "push this deadline back", which `#touch()` does on every single call into
+ * this object, is cancel-then-set and needs the id of what stands now. See
+ * `namedDeadline`.
+ */
+const IDLE_RECLAIM_ID = "idle-reclaim-id";
 
 /**
  * How long a workspace survives without being used.
@@ -213,8 +224,8 @@ const IDLE_RECLAIM = "idle-reclaim";
  */
 const IDLE_RECLAIM_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** The wake intent that stops a container nobody is using. */
-const CONTAINER_IDLE = "container-idle";
+/** Where the container-idle deadline keeps its current schedule id. */
+const CONTAINER_IDLE_ID = "container-idle-id";
 
 /**
  * How long a container stays up after the last command **started**.
@@ -293,36 +304,55 @@ const TREE_PROBE_TTL_MS = 30_000;
  */
 const INSTALL_EXEC_ID = "dependency-install";
 
-/** The wake key for one backend's pending pull. */
-const syncRetryKey = (backend: string): string => `sync-retry:${backend}`;
+/**
+ * The five reasons this object wakes, as one map.
+ *
+ * Written out rather than inferred because two things type against it: the
+ * scheduler that registers the callbacks, and the `JobLifecycle` that schedules
+ * two of them by name. A name that exists in one and not the other is then a
+ * compile error rather than a schedule that is rejected at runtime.
+ */
+// A `type`, not an `interface`: the scheduler constrains its handler map to a
+// `Record<string, …>`, and only a type alias carries the implicit index
+// signature that satisfies. An interface here fails with a message that names
+// neither cause nor cure.
+type WorkspaceWakeHandlers = {
+  installRun: () => Promise<void>;
+  installWatch: () => Promise<void>;
+  idleReclaim: () => Promise<void>;
+  containerIdle: () => Promise<void>;
+  syncRetry: (payload: SyncRetryIntent) => Promise<void>;
+};
+
+/** Where one backend's pending-pull deadline keeps its schedule id. */
+const syncRetryIdKey = (backend: string): string => `sync-retry-id:${backend}`;
 
 /**
- * The library's persistence hook, over the wake map.
+ * The library's persistence hook, over one deadline per backend.
  *
  * `Workspace` calls this itself: `schedule` after a post-command pull fails,
  * `clear` after one finally succeeds. All this side owns is where the intent
  * lives and when the object wakes to act on it.
+ *
+ * The whole intent rides in the schedule's **payload** rather than being
+ * reconstructed from the row. A schedule stores its time in seconds, so reading
+ * `notBefore` back off the row would return a truncated version of what the
+ * library wrote — and the library compares that value to its own backoff
+ * arithmetic. Carrying it in the payload makes the round trip exact and keeps
+ * `attempt`, which a schedule row has nowhere to put at all.
  */
-function syncRetryScheduler(wake: WakeMap): SyncRetryScheduler {
+function syncRetryScheduler(
+  deadlineFor: (backend: string) => Deadline<SyncRetryIntent>
+): SyncRetryScheduler {
   return {
     async get(backend: string): Promise<SyncRetryIntent | undefined> {
-      const intent = await wake.get(syncRetryKey(backend));
-      if (!intent) return undefined;
-      return {
-        backend,
-        attempt: intent.attempt ?? 0,
-        notBefore: intent.notBefore
-      };
+      return (await deadlineFor(backend).get())?.payload;
     },
     async schedule(intent: SyncRetryIntent): Promise<void> {
-      await wake.set({
-        key: syncRetryKey(intent.backend),
-        notBefore: intent.notBefore,
-        attempt: intent.attempt
-      });
+      await deadlineFor(intent.backend).set(new Date(intent.notBefore), intent);
     },
     async clear(backend: string): Promise<void> {
-      await wake.clear(syncRetryKey(backend));
+      await deadlineFor(backend).clear();
     }
   };
 }
@@ -448,7 +478,65 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     return this.#cfg.installPlan.timeoutMs ?? 20 * 60_000;
   }
 
-  readonly #wake = new WakeMap(this.ctx.storage);
+  /**
+   * The one alarm, multiplexed — and the five reasons this object wakes.
+   *
+   * A callback is registered under a **name**, and a schedule row persists that
+   * name rather than a closure: the object is re-created on every wake, so
+   * anything captured here would not survive one. Registration therefore happens
+   * unconditionally, in a field initializer, every time.
+   *
+   * `hostOwns` is the acknowledgement that this class defines `alarm()` and
+   * `fetch()` itself. A lifecycle installs its handlers only where the host has
+   * none, so without saying so here the scheduler would be installed and never
+   * fire, with no error anywhere. `alarm()` below calls through, which is what
+   * makes the declaration true. **`fetch()` deliberately does not** — it serves
+   * `computerd`'s capnweb WebSocket upgrade, and a lifecycle's `fetch` takes any
+   * upgrade into its own connection handling.
+   */
+  readonly #wake = installScheduler<WorkspaceWakeHandlers>(this, {
+    hostOwns: ["alarm", "fetch"],
+    callbacks: {
+      installRun: () => this.#onInstallRun(),
+      installWatch: () => this.#onInstallWatch(),
+      idleReclaim: () => this.#onIdleReclaim(),
+      containerIdle: () => this.#onContainerIdle(),
+      syncRetry: (payload: SyncRetryIntent) =>
+        this.#onSyncRetry(payload.backend)
+    },
+    onError: (err: unknown) => {
+      console.error(`[${this.#tag}] a scheduled callback failed for good`, {
+        id: this.ctx.id.toString(),
+        err: String(err)
+      });
+    }
+  });
+
+  /** Reclaim a workspace nobody has touched. Moved forward by every `#touch`. */
+  readonly #idleReclaim = namedDeadline({
+    storage: this.ctx.storage,
+    scheduler: this.#wake.scheduler,
+    key: IDLE_RECLAIM_ID,
+    callback: "idleReclaim"
+  });
+
+  /** Stop a container nobody is using. Moved forward by every `#touch`. */
+  readonly #containerIdle = namedDeadline({
+    storage: this.ctx.storage,
+    scheduler: this.#wake.scheduler,
+    key: CONTAINER_IDLE_ID,
+    callback: "containerIdle"
+  });
+
+  /** One pending-pull deadline per backend, keyed by backend name. */
+  #syncRetryDeadline(backend: string): Deadline<SyncRetryIntent> {
+    return namedDeadline({
+      storage: this.ctx.storage,
+      scheduler: this.#wake.scheduler,
+      key: syncRetryIdKey(backend),
+      callback: "syncRetry"
+    });
+  }
 
   /**
    * The dependency install, as a job this object owns through its alarm.
@@ -472,10 +560,16 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * arming wrote to `claim`, which recognises its own placeholder and nothing
    * else — taking over any `running` record instead would be displacement again.
    */
-  readonly #install = new JobLifecycle<{ command: string }, InstallContext>({
+  readonly #install = new JobLifecycle<
+    { command: string },
+    InstallContext,
+    WorkspaceWakeHandlers
+  >({
     id: INSTALL_KEY,
     storage: this.ctx.storage,
-    wake: this.#wake,
+    scheduler: this.#wake.scheduler,
+    run: "installRun",
+    watch: "installWatch",
     staleMs: INSTALL_STALE_MS,
     watchMs: INSTALL_WATCH_MS,
     armCooldownMs: INSTALL_ARM_COOLDOWN_MS
@@ -579,7 +673,9 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
       // Required, not optional. Without it a post-command pull that fails has
       // nowhere to record itself and nothing to resume it, and the container
       // keeps edits the workspace never sees.
-      retryScheduler: syncRetryScheduler(this.#wake),
+      retryScheduler: syncRetryScheduler((backend) =>
+        this.#syncRetryDeadline(backend)
+      ),
       // One span per sync push, sync pull, exec spawn and filesystem op, into
       // the same Workers Observability view the rest of this Worker traces to.
       // Needs `observability.traces.enabled` in wrangler.jsonc; without the
@@ -616,11 +712,11 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   /**
    * Repair a lost alarm on the way in.
    *
-   * The one failure the wake map cannot defend against from the inside: the
+   * The one failure a scheduler cannot defend against from the inside: the
    * runtime retries a throwing `alarm()` a bounded number of times and then
    * stops for good, and a deleted-class migration takes the alarm with the
-   * storage. Both leave intents sitting in the map with nothing coming for them,
-   * and the symptom is silence.
+   * storage. Both leave schedule rows due with nothing coming for them, and the
+   * symptom is silence.
    *
    * So every RPC into this object checks. That fully covers `sync-retry`,
    * `install-watch` and `container-idle`, which only matter while somebody is
@@ -630,6 +726,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    */
   async #repairAlarm(): Promise<void> {
     try {
+      await this.#wake.start();
       await this.#wake.rearm();
     } catch (err) {
       console.error(`[${this.#tag}] could not repair the alarm`, {
@@ -918,15 +1015,17 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    */
   async #touch(): Promise<void> {
     const now = Date.now();
+    // Everything reaches this object by RPC, which bypasses `fetch` — so this
+    // is where the lifecycle gets started, and without it the scheduler's schema
+    // is never migrated and the first `set` below runs against nothing. Guarded
+    // internally, so calling it on every touch costs one resolved promise.
+    await this.#wake.start();
     await this.ctx.storage.put("lastUsedAt", now);
-    await this.#wake.set({
-      key: IDLE_RECLAIM,
-      notBefore: now + IDLE_RECLAIM_MS
-    });
-    await this.#wake.set({
-      key: CONTAINER_IDLE,
-      notBefore: now + this.#containerIdleMs
-    });
+    // Two deadlines *moved*, not two schedules added. This is the hottest path
+    // in the object — every entry point calls it — so a bare `scheduler.set`
+    // here would leave one row per request, every one of them due.
+    await this.#idleReclaim.set(new Date(now + IDLE_RECLAIM_MS));
+    await this.#containerIdle.set(new Date(now + this.#containerIdleMs));
   }
 
   /**
@@ -968,6 +1067,12 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
     // otherwise a reclaimed object wakes once more into empty storage.
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    // It *does* take the scheduler's SQL tables, and the lifecycle has already
+    // started so it will not migrate them a second time. Without this the next
+    // touch of this isolate — a reclaim does not evict it — schedules against a
+    // table that is no longer there. `CREATE TABLE IF NOT EXISTS`, so calling it
+    // on an object that still has its schema costs nothing.
+    await this.#wake.scheduler.onStart();
 
     return { reclaimed: true, idleMs, bytes };
   }
@@ -1792,184 +1897,128 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   /**
    * Every durable wake-up this object has, dispatched from the one alarm.
    *
-   * Two rules, and both are here because breaking either fails silently:
+   * **This must not throw.** The runtime retries a failing alarm handler a
+   * bounded number of times and then stops for good — so a throw here would
+   * eventually take every *future* wake-up down with it, permanently, and the
+   * only symptom is that nothing ever happens again.
    *
-   * 1. **This must not throw.** The runtime retries a failing alarm handler a
-   *    bounded number of times and then stops for good — so an intent that
-   *    throws would eventually take the *others* down with it, permanently, and
-   *    the only symptom is that nothing ever happens again. Each intent is
-   *    caught on its own and the re-arm runs in a `finally`.
-   * 2. **An intent that neither reschedules nor clears itself is dropped.**
-   *    Otherwise it stays due forever and the object wakes in a loop. The one
-   *    real case is `retryPendingSync` returning `exhausted`, which by design
-   *    leaves the intent in storage; the sweep below is what stops that
-   *    becoming a permanent spin, and it logs loudly because an exhausted sync
-   *    means edits were lost.
+   * The rest of what used to live here is gone rather than moved. Each reason
+   * to wake is now a registered callback the scheduler dispatches by name, so
+   * there is no key matching, no per-intent `try`/`catch` (the scheduler retries
+   * a failing callback and reports one that fails for good through `onError`),
+   * and no sweep for an intent that neither rescheduled nor cleared itself —
+   * a one-shot row is dropped when it runs, so it cannot stay due forever.
    */
   override async alarm(): Promise<void> {
-    const now = Date.now();
-
-    let due: WakeIntent[];
     try {
-      due = await this.#wake.due(now);
+      await this.#wake.alarm();
     } catch (err) {
-      console.error(`[${this.#tag}] could not read the wake map`, {
+      console.error(`[${this.#tag}] the alarm failed`, {
         id: this.ctx.id.toString(),
         err: String(err)
       });
-      await this.#wake.repair(now).catch(() => {});
-      return;
-    }
-
-    try {
-      for (const intent of due) {
-        try {
-          await this.#dispatch(intent);
-        } catch (err) {
-          console.error(`[${this.#tag}] wake intent failed`, {
-            id: this.ctx.id.toString(),
-            key: intent.key,
-            err: String(err)
-          });
-        }
-
-        // The backstop from rule 2: if the handler left the intent exactly as
-        // it found it, it is not going to make progress on the next wake
-        // either.
-        const after = await this.#wake.get(intent.key).catch(() => undefined);
-        if (after && after.notBefore === intent.notBefore) {
-          console.error(`[${this.#tag}] dropping a stuck wake intent`, {
-            id: this.ctx.id.toString(),
-            key: intent.key,
-            attempt: after.attempt
-          });
-          await this.#wake.clear(intent.key).catch(() => {});
-        }
-      }
-    } finally {
-      await this.#wake.rearm().catch((err: unknown) => {
-        console.error(`[${this.#tag}] could not re-arm the alarm`, {
-          id: this.ctx.id.toString(),
-          err: String(err)
-        });
-      });
+      // One missed wake rather than every future one: re-arm from whatever
+      // survived, since the throw above is what the runtime counts against the
+      // bounded retry that ends in the alarm being abandoned.
+      await this.#wake.rearm().catch(() => {});
     }
   }
 
-  /** Route one due intent to whatever owns it. */
-  async #dispatch(intent: WakeIntent): Promise<void> {
-    if (intent.key.startsWith("sync-retry:")) {
-      const backend = intent.key.slice("sync-retry:".length);
-      const result = await this.#workspace.retryPendingSync(backend);
+  /** A backend's pending pull came due. */
+  async #onSyncRetry(backend: string): Promise<void> {
+    const result = await this.#workspace.retryPendingSync(backend);
+    if (result.status !== "exhausted") return;
 
-      if (result.status === "exhausted") {
-        // The library leaves the intent stored on this path, so clear it here
-        // rather than letting the stuck-intent sweep do it silently. Edits made
-        // in the container by the command that triggered this pull are gone.
-        console.error(`[${this.#tag}] pending sync exhausted`, {
-          id: this.ctx.id.toString(),
-          backend,
-          attempt: result.attempt,
-          err: result.error
-        });
-        await this.#wake.clear(intent.key);
-      }
-      return;
-    }
-
-    if (intent.key === this.#install.runIntent) {
-      // Cleared first, and unconditionally. This handler runs for minutes, and an
-      // intent left in place would be re-dispatched by the next wake — arming a
-      // second `npm ci` alongside the first, which is how a tree gets corrupted.
-      // `startInstall`'s in-flight guard would catch that, but the cheaper answer
-      // is not to schedule it twice.
-      await this.#wake.clear(intent.key);
-
-      const context = await this.#install.context();
-      const armedAt = await this.#install.armedAt();
-      await this.#install.clearArmed();
-      if (!context?.dir || armedAt === undefined) return;
-
-      const state = await this.#installAwaited(
-        {
-          dir: context.dir,
-          ...(context.repo ? { repo: context.repo } : {})
-        },
-        armedAt
-      );
-      console.info(`[${this.#tag}] armed reinstall finished`, {
-        id: this.ctx.id.toString(),
-        dir: context.dir,
-        state: state.state
-      });
-      return;
-    }
-
-    if (intent.key === this.#install.watchIntent) {
-      const state = await this.#install.read();
-      if (state.state !== "running") {
-        await this.#wake.clear(intent.key);
-        return;
-      }
-      // Still running and nobody draining it: this isolate is new since the
-      // command started. Re-attach, and come back if it is still going.
-      await this.#reattachInstall();
-      await this.#install.armWatch();
-      return;
-    }
-
-    if (intent.key === IDLE_RECLAIM) {
-      const { reclaimed, idleMs } = await this.reclaimIfIdle();
-      // Not idle after all — something used it since this was armed. `#touch`
-      // has already moved the deadline, so there is nothing to re-arm; clearing
-      // would throw away the *new* intent, so this deliberately does neither.
-      if (!reclaimed) {
-        console.info(`[${this.#tag}] idle reclaim deferred`, {
-          id: this.ctx.id.toString(),
-          idleMinutes: Math.round(idleMs / 60_000)
-        });
-      }
-      return;
-    }
-
-    if (intent.key === CONTAINER_IDLE) {
-      // An install still running is "in use" even though nothing has called in
-      // — stopping the container under it would throw away the work and leave
-      // the gate closed until something noticed.
-      const state = await this.#install.read();
-      if (state.state === "running") {
-        await this.#wake.set({
-          key: CONTAINER_IDLE,
-          notBefore: Date.now() + this.#containerIdleMs
-        });
-        return;
-      }
-
-      // Re-read the clock rather than trusting the alarm, the same way
-      // `reclaimIfIdle` does. `#touch` moves the intent forward, but an alarm
-      // already in flight cannot be recalled — so without this a workspace that
-      // was used a second ago can still have its container stopped by a wake-up
-      // that was scheduled before that use.
-      const lastUsedAt =
-        (await this.ctx.storage.get<number>("lastUsedAt")) ?? 0;
-      const idleMs = Date.now() - lastUsedAt;
-      if (idleMs < this.#containerIdleMs) {
-        await this.#wake.set({
-          key: CONTAINER_IDLE,
-          notBefore: lastUsedAt + this.#containerIdleMs
-        });
-        return;
-      }
-
-      await this.#stopContainer();
-      await this.#wake.clear(intent.key);
-      return;
-    }
-
-    console.warn(`[${this.#tag}] unknown wake intent`, {
+    // The library leaves the intent stored on this path, so clear it here rather
+    // than leaving a deadline nothing will ever act on. Edits made in the
+    // container by the command that triggered this pull are gone.
+    console.error(`[${this.#tag}] pending sync exhausted`, {
       id: this.ctx.id.toString(),
-      key: intent.key
+      backend,
+      attempt: result.attempt,
+      err: result.error
     });
-    await this.#wake.clear(intent.key);
+    await this.#syncRetryDeadline(backend).clear();
+  }
+
+  /**
+   * The armed reinstall came due.
+   *
+   * `clearArmed` first and unconditionally: this handler runs for minutes, and
+   * the stamp left in place is what a second arming would recognise as its own.
+   * `startInstall`'s in-flight guard would catch a double, but the cheaper
+   * answer is not to schedule one.
+   */
+  async #onInstallRun(): Promise<void> {
+    const context = await this.#install.context();
+    const armedAt = await this.#install.armedAt();
+    await this.#install.clearArmed();
+    if (!context?.dir || armedAt === undefined) return;
+
+    const state = await this.#installAwaited(
+      {
+        dir: context.dir,
+        ...(context.repo ? { repo: context.repo } : {})
+      },
+      armedAt
+    );
+    console.info(`[${this.#tag}] armed reinstall finished`, {
+      id: this.ctx.id.toString(),
+      dir: context.dir,
+      state: state.state
+    });
+  }
+
+  /** The watchdog: an install still running that nobody is draining. */
+  async #onInstallWatch(): Promise<void> {
+    const state = await this.#install.read();
+    if (state.state !== "running") return;
+    // Still running and nobody draining it: this isolate is new since the
+    // command started. Re-attach, and come back if it is still going.
+    await this.#reattachInstall();
+    await this.#install.armWatch();
+  }
+
+  /** The idle-reclaim deadline came due. */
+  async #onIdleReclaim(): Promise<void> {
+    const { reclaimed, idleMs } = await this.reclaimIfIdle();
+    // Not idle after all — something used it since this was armed, and that
+    // `#touch` already moved the deadline to a row of its own. So there is
+    // nothing to re-arm here, and re-arming would create a second one.
+    if (reclaimed) return;
+    console.info(`[${this.#tag}] idle reclaim deferred`, {
+      id: this.ctx.id.toString(),
+      idleMinutes: Math.round(idleMs / 60_000)
+    });
+  }
+
+  /** The container-idle deadline came due. */
+  async #onContainerIdle(): Promise<void> {
+    // An install still running is "in use" even though nothing has called in —
+    // stopping the container under it would throw away the work and leave the
+    // gate closed until something noticed.
+    const state = await this.#install.read();
+    if (state.state === "running") {
+      await this.#containerIdle.set(
+        new Date(Date.now() + this.#containerIdleMs)
+      );
+      return;
+    }
+
+    // Re-read the clock rather than trusting the alarm, the same way
+    // `reclaimIfIdle` does. `#touch` moves the deadline forward, but an alarm
+    // already in flight cannot be recalled — so without this a workspace that
+    // was used a second ago can still have its container stopped by a wake-up
+    // that was scheduled before that use.
+    const lastUsedAt = (await this.ctx.storage.get<number>("lastUsedAt")) ?? 0;
+    const idleMs = Date.now() - lastUsedAt;
+    if (idleMs < this.#containerIdleMs) {
+      await this.#containerIdle.set(
+        new Date(lastUsedAt + this.#containerIdleMs)
+      );
+      return;
+    }
+
+    await this.#stopContainer();
   }
 }
