@@ -1,6 +1,6 @@
 import { DurableObject, tracing } from "cloudflare:workers";
-// One Durable Object has one alarm, and this object wakes for five different
-// reasons. A `Scheduler` is the multiplexer; what it does *not* own is what this
+// One Durable Object has one alarm, and this object wakes for more reasons than
+// that. A `Scheduler` is the multiplexer; what it does *not* own is what this
 // object owes on waking, which is the callbacks registered on it below.
 import {
   installScheduler,
@@ -305,7 +305,7 @@ const TREE_PROBE_TTL_MS = 30_000;
 const INSTALL_EXEC_ID = "dependency-install";
 
 /**
- * The five reasons this object wakes, as one map.
+ * Every reason this object wakes, as one map.
  *
  * Written out rather than inferred because two things type against it: the
  * scheduler that registers the callbacks, and the `JobLifecycle` that schedules
@@ -479,7 +479,7 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
   }
 
   /**
-   * The one alarm, multiplexed — and the five reasons this object wakes.
+   * The one alarm, multiplexed across every reason this object wakes.
    *
    * A callback is registered under a **name**, and a schedule row persists that
    * name rather than a closure: the object is re-created on every wake, so
@@ -1902,12 +1902,12 @@ export abstract class WorkspaceObjectBase extends WorkspaceContainerBase {
    * eventually take every *future* wake-up down with it, permanently, and the
    * only symptom is that nothing ever happens again.
    *
-   * The rest of what used to live here is gone rather than moved. Each reason
-   * to wake is now a registered callback the scheduler dispatches by name, so
-   * there is no key matching, no per-intent `try`/`catch` (the scheduler retries
-   * a failing callback and reports one that fails for good through `onError`),
-   * and no sweep for an intent that neither rescheduled nor cleared itself —
-   * a one-shot row is dropped when it runs, so it cannot stay due forever.
+   * Nothing else belongs here. Each reason to wake is a registered callback the
+   * scheduler dispatches by name, so this method neither matches on keys nor
+   * catches per-callback failures — the scheduler retries a failing callback and
+   * reports one that fails for good through `onError`. Nor does it sweep for a
+   * schedule that neither rescheduled nor cleared itself: a one-shot row is
+   * dropped when it runs, so it cannot stay due forever.
    */
   override async alarm(): Promise<void> {
     try {

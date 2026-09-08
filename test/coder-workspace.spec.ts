@@ -684,11 +684,10 @@ describe("trusting the interception CA", () => {
  * What the scheduler rewrite could break quietly, and what a passing suite would
  * not otherwise notice.
  *
- * The predecessor kept one storage row per *key*, so re-arming a deadline was an
- * upsert and re-arming it a thousand times cost nothing. A schedule is a row the
- * scheduler mints an id for, so the same code against the same intent leaves a
- * thousand rows unless each one cancels the last — and `#touch()` runs on every
- * entry point, which makes this the busiest path in the object.
+ * A schedule is a row the scheduler mints an id for, not a keyed upsert, so
+ * moving a deadline leaves a second row unless it cancels the first. `#touch()`
+ * runs on every entry point, which makes this the busiest path in the object and
+ * the one where an extra row per call compounds fastest.
  *
  * Counted through storage rather than through a scheduler handle, because the
  * count is the durable consequence and a handle would only report what the code
@@ -726,6 +725,39 @@ describe("the idle deadlines, over a scheduler that has no upsert", () => {
     const callbacks = afterFour.map((row) => row.callback).sort();
     expect(callbacks).toContain("idleReclaim");
     expect(callbacks).toContain("containerIdle");
+  });
+
+  /**
+   * Concurrent touches, which is the case that actually happens: several
+   * subagents reach one workspace at once, and each entry point moves both
+   * deadlines. A move is read-cancel-create-write across several awaits, so if
+   * two interleaved they could cancel the same row, create two replacements and
+   * keep one id — leaving a schedule nothing can reach.
+   *
+   * They do not interleave, and this is the evidence rather than the argument.
+   * A Durable Object closes its input gate while a storage operation is in
+   * flight, so a second RPC is not delivered part-way through the first one\'s
+   * move. Worth pinning because the guarantee is the platform\'s rather than
+   * this code\'s: nothing here would fail loudly if it stopped holding.
+   */
+  it("keeps one row per deadline under concurrent touches", async () => {
+    const stub = freshWorkspace("touch-concurrent");
+
+    await Promise.all([
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub)
+    ]);
+
+    const rows = await schedules(stub);
+    const byCallback = rows.map((row) => row.callback).sort();
+    expect(byCallback.filter((c) => c === "idleReclaim")).toHaveLength(1);
+    expect(byCallback.filter((c) => c === "containerIdle")).toHaveLength(1);
   });
 
   it("moves the deadline rather than adding beside it", async () => {
@@ -777,11 +809,11 @@ describe("the idle deadlines, over a scheduler that has no upsert", () => {
 /**
  * Booting on what the predecessor left behind, since there is no migration.
  *
- * The old alarm kept every deadline in one KV row called `"wake"` and armed the
- * physical alarm itself. An object upgraded mid-install has all of it on disk:
- * a `running` install record, an `install-run` intent in that row pointing at
- * it, and an alarm that will fire once into a handler with no schedule rows
- * behind it.
+ * Deployed objects hold a KV row called `"wake"` carrying every deadline, and a
+ * physical alarm armed against it. Nothing reads that row here, so an object
+ * upgraded mid-install boots with all of it still on disk: a `running` install
+ * record, an `install-run` entry in that row pointing at it, and an alarm that
+ * fires once into a handler with no schedule rows behind it.
  *
  * The intent is orphaned — nothing reads that row any more — so the question is
  * not whether the wake-up is lost (it is) but whether the object recovers. It
@@ -800,7 +832,7 @@ describe("an object upgraded mid-install", () => {
         command: "npm ci --no-audit --no-fund",
         startedAt: Date.now() - limit - 10 * 60_000
       } satisfies InstallState);
-      // The predecessor's row, with the intent that used to run the install.
+      // The legacy row, carrying the entry that would have run the install.
       await state.storage.put("wake", {
         "install-run": { key: "install-run", notBefore: Date.now() - 60_000 },
         "install-watch": {
