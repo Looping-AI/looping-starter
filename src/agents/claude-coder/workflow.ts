@@ -3,7 +3,8 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@dynamicagents/core";
 import {
   runHandleTask,
-  type HandleTaskParams
+  type HandleTaskParams,
+  type TaskVerdict
 } from "@dynamicagents/core/round";
 import { CLAUDE_CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
@@ -23,8 +24,8 @@ export class ClaudeCoderWorkflow extends WorkflowEntrypoint<
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
-  ): Promise<void> {
-    await runHandleTask(event.payload, step, {
+  ): Promise<TaskVerdict> {
+    return await runHandleTask(event.payload, step, {
       resolveAgent: (identity) => claudeCoder.resolveAgent(this.env, identity),
       config: resolveConfig(CLAUDE_CODER_CONFIG),
       policy: roundPolicy,

@@ -3,7 +3,8 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@dynamicagents/core";
 import {
   runHandleTask,
-  type HandleTaskParams
+  type HandleTaskParams,
+  type TaskVerdict
 } from "@dynamicagents/core/round";
 import { ARC_PLAYER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
@@ -24,8 +25,8 @@ export class ArcHandleTaskWorkflow extends WorkflowEntrypoint<
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
-  ): Promise<void> {
-    await runHandleTask(event.payload, step, {
+  ): Promise<TaskVerdict> {
+    return await runHandleTask(event.payload, step, {
       resolveAgent: (identity) => arcPlayer.resolveAgent(this.env, identity),
       config: resolveConfig(ARC_PLAYER_CONFIG),
       policy: roundPolicy,

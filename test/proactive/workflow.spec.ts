@@ -254,6 +254,95 @@ describe("against the real Durable Object", () => {
 });
 
 /**
+ * What the instance record says once the run is over.
+ *
+ * This workflow returned `void` on every path, so a failed notification and a
+ * delivered one both recorded `status: complete  success: true  error: null`,
+ * and any monitoring built on that saw nothing. Core's round loop had the same
+ * defect and the same fix; this agent writes its own orchestration, so it needs
+ * its own — including the third terminal shape core cannot produce.
+ */
+describe("the verdict a finished run returns", () => {
+  const deps = (stub: DurableObjectStub<ProactiveAgent>) => ({
+    resolveAgent: () => stub,
+    signingKey: env.A2A_SIGNING_KEY,
+    abandonedCopy: ABANDONED_COPY
+  });
+
+  it("tells a reply, a silence and a failure apart", async () => {
+    const shapes = [
+      { generate: { kind: "reply", text: "here you go" }, outcome: "replied" },
+      { generate: { kind: "no_reply" }, outcome: "no-reply" },
+      { generate: { kind: "failed", text: "it broke" }, outcome: "failed" }
+    ];
+
+    for (const [i, shape] of shapes.entries()) {
+      const { stub } = fakeAgent({ saveTask: true });
+      const { step } = fakeStep({
+        cached: { generate: shape.generate, notify: undefined }
+      });
+
+      const verdict = await runNotifyTask(
+        params(`verdict-${i}`),
+        step,
+        deps(stub)
+      );
+
+      expect(verdict).toEqual({ outcome: shape.outcome });
+    }
+  });
+
+  it("reports a task canceled before it started", async () => {
+    const { stub } = fakeAgent({ markWorking: "canceled" });
+    const { step } = fakeStep();
+
+    await expect(
+      runNotifyTask(params("verdict-cancel"), step, deps(stub))
+    ).resolves.toEqual({ outcome: "canceled" });
+  });
+
+  /**
+   * The guarded write refused, which is a `tasks/cancel` landing while the model
+   * worked: nothing was persisted and nothing posted. Reporting what the turn
+   * *would* have said would describe an outcome the user never received — the
+   * same class of defect as a failed run recording itself as a clean `complete`.
+   */
+  it("reports the cancellation, not the reply nobody got", async () => {
+    const { stub } = fakeAgent({
+      probeState: TaskState.TASK_STATE_WORKING,
+      saveTask: false
+    });
+    const { step } = fakeStep({
+      cached: { generate: { kind: "reply", text: "here you go" } }
+    });
+
+    await expect(
+      runNotifyTask(params("verdict-race"), step, deps(stub))
+    ).resolves.toEqual({ outcome: "canceled" });
+  });
+
+  it("reports a turn abandoned after its retries ran out", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { stub } = fakeAgent({ saveTask: true });
+    const failing = {
+      ...stub,
+      async converse() {
+        throw new Error("the model refused every attempt");
+      }
+    } as unknown as DurableObjectStub<ProactiveAgent>;
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    const verdict = await runNotifyTask(
+      params("verdict-abandoned"),
+      step,
+      deps(failing)
+    );
+
+    expect(verdict).toMatchObject({ outcome: "abandoned" });
+  });
+});
+
+/**
  * A `generate` step that exhausts its retries must still reach the user.
  *
  * `generate` is a durable step: it retries a bounded number of times and then

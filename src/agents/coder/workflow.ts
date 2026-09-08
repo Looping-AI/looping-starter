@@ -4,7 +4,8 @@ import { resolveConfig } from "@dynamicagents/core";
 import {
   runHandleTask,
   type HandleTaskParams,
-  type NonRecoverableKind
+  type NonRecoverableKind,
+  type TaskVerdict
 } from "@dynamicagents/core/round";
 import { CODER_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
@@ -86,8 +87,8 @@ export class CoderWorkflow extends WorkflowEntrypoint<Env, HandleTaskParams> {
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
-  ): Promise<void> {
-    await runHandleTask(event.payload, step, {
+  ): Promise<TaskVerdict> {
+    return await runHandleTask(event.payload, step, {
       resolveAgent: (identity) => coder.resolveAgent(this.env, identity),
       config: resolveConfig(CODER_CONFIG),
       policy: roundPolicy,

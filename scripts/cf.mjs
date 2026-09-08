@@ -37,8 +37,9 @@
 //   npm run cf -- containers
 //   npm run cf -- GET workflows -q per_page=50
 //
-// This Worker's workflows are `handle-task`, `arc-handle-task` and
-// `notify-task`; `npm run cf -- wf` with no name lists whatever is deployed.
+// This Worker's workflows are `handle-task`, `arc-handle-task`, `notify-task`,
+// `coder` and `claude-coder`; `npm run cf -- wf` with no name lists whatever is
+// deployed, which is the answer to trust when this comment has drifted again.
 import fs from "node:fs";
 
 const ENV_FILE = ".cf.env";
@@ -340,6 +341,15 @@ async function cmdWf(args) {
   out(
     `status: ${r.status}  success: ${r.success}  error: ${r.error ?? "null"}`
   );
+  // The line the other three cannot give you. A task that failed still finishes
+  // its instance cleanly — every step `ok`, `success: true` — because a typed
+  // turn failure is a value the loop delivers rather than a throw. The verdict
+  // the workflow returns is the only place that distinction is recorded, and it
+  // arrives here as the instance's `output`.
+  if (r.output !== undefined && r.output !== null)
+    out(
+      `verdict: ${typeof r.output === "object" ? JSON.stringify(r.output) : r.output}`
+    );
   out(
     `queued ${r.queued ?? "?"} · start ${r.start ?? "?"} · end ${r.end ?? "?"}`
   );
