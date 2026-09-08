@@ -679,3 +679,220 @@ describe("trusting the interception CA", () => {
     }
   });
 });
+
+/**
+ * What the scheduler rewrite could break quietly, and what a passing suite would
+ * not otherwise notice.
+ *
+ * A schedule is a row the scheduler mints an id for, not a keyed upsert, so
+ * moving a deadline leaves a second row unless it cancels the first. `#touch()`
+ * runs on every entry point, which makes this the busiest path in the object and
+ * the one where an extra row per call compounds fastest.
+ *
+ * Counted through storage rather than through a scheduler handle, because the
+ * count is the durable consequence and a handle would only report what the code
+ * under test already believes.
+ */
+describe("the idle deadlines, over a scheduler that has no upsert", () => {
+  /** The same hook anything reaching this object goes through. */
+  async function touch(stub: DurableObjectStub) {
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+  }
+
+  const schedules = (stub: DurableObjectStub) =>
+    runInDurableObject(stub, (_instance, state) => [
+      ...state.storage.sql
+        .exec("SELECT id, callback FROM cf_agents_schedules")
+        .toArray()
+    ]);
+
+  it("keeps one row per deadline however often the workspace is touched", async () => {
+    const stub = freshWorkspace("touch-repeatedly");
+
+    await touch(stub);
+    const afterOne = await schedules(stub);
+
+    await touch(stub);
+    await touch(stub);
+    await touch(stub);
+    const afterFour = await schedules(stub);
+
+    // The two idle timers, and no more of them for three further touches.
+    expect(afterFour).toHaveLength(afterOne.length);
+    const callbacks = afterFour.map((row) => row.callback).sort();
+    expect(callbacks).toContain("idleReclaim");
+    expect(callbacks).toContain("containerIdle");
+  });
+
+  /**
+   * Concurrent touches, which is the case that actually happens: several
+   * subagents reach one workspace at once, and each entry point moves both
+   * deadlines. A move is read-cancel-create-write across several awaits, so if
+   * two interleaved they could cancel the same row, create two replacements and
+   * keep one id — leaving a schedule nothing can reach.
+   *
+   * They do interleave: the input gate closes while a storage operation is in
+   * flight, not for the stretch between two of them. So `namedDeadline`
+   * serializes moves per key, and this is the end-to-end half of proving it —
+   * the deterministic unit lives in core, and this shows the object really gets
+   * it, through a real Durable Object under concurrent RPCs.
+   *
+   * Worth having both, because this one passes on timing alone when the
+   * serialization is missing. It only failed in a full-suite run.
+   */
+  it("keeps one row per deadline under concurrent touches", async () => {
+    const stub = freshWorkspace("touch-concurrent");
+
+    await Promise.all([
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub),
+      touch(stub)
+    ]);
+
+    const rows = await schedules(stub);
+    const byCallback = rows.map((row) => row.callback).sort();
+    expect(byCallback.filter((c) => c === "idleReclaim")).toHaveLength(1);
+    expect(byCallback.filter((c) => c === "containerIdle")).toHaveLength(1);
+  });
+
+  it("moves the deadline rather than adding beside it", async () => {
+    const stub = freshWorkspace("touch-moves");
+
+    await touch(stub);
+    const first = await schedules(stub);
+    const firstIdle = first.find((row) => row.callback === "idleReclaim");
+    expect(firstIdle).toBeDefined();
+
+    await touch(stub);
+    const second = await schedules(stub);
+    const secondIdle = second.find((row) => row.callback === "idleReclaim");
+
+    // A different row, not a second one: the id changes because the deadline was
+    // cancelled and recreated, and the count does not.
+    expect(secondIdle).toBeDefined();
+    expect(secondIdle!.id).not.toBe(firstIdle!.id);
+    expect(second.filter((row) => row.callback === "idleReclaim")).toHaveLength(
+      1
+    );
+  });
+
+  /**
+   * A reclaimed workspace must not wake again, and must still work if it is
+   * used again — a reclaim empties the object, it does not evict the isolate.
+   *
+   * `deleteAll()` takes the scheduler's SQL tables with it, and a lifecycle that
+   * has already started will not migrate them a second time. So without the
+   * re-migration in `reclaimIfIdle` the first touch after a reclaim schedules
+   * against a table that is no longer there, and this test is the only thing
+   * between that and a workspace that stops arming its timers for good.
+   */
+  it("leaves no schedule behind after a reclaim, and still schedules after one", async () => {
+    const stub = freshWorkspace("reclaim-clears");
+    await touch(stub);
+    expect((await schedules(stub)).length).toBeGreaterThan(0);
+
+    expect((await stub.reclaimIfIdle(0)).reclaimed).toBe(true);
+    expect(await schedules(stub)).toHaveLength(0);
+
+    await touch(stub);
+    const again = (await schedules(stub)).map((row) => row.callback).sort();
+    expect(again).toContain("idleReclaim");
+    expect(again).toContain("containerIdle");
+  });
+});
+
+/**
+ * Booting on what the predecessor left behind, since there is no migration.
+ *
+ * Deployed objects hold a KV row called `"wake"` carrying every deadline, and a
+ * physical alarm armed against it. Nothing reads that row here, so an object
+ * upgraded mid-install boots with all of it still on disk: a `running` install
+ * record, an `install-run` entry in that row pointing at it, and an alarm that
+ * fires once into a handler with no schedule rows behind it.
+ *
+ * The intent is orphaned — nothing reads that row any more — so the question is
+ * not whether the wake-up is lost (it is) but whether the object recovers. It
+ * does, through the staleness bound, which is the mechanism that already exists
+ * for "the isolate that owned this is gone". An orphaned intent is exactly that
+ * case, so the upgrade needs no drain of its own.
+ */
+describe("an object upgraded mid-install", () => {
+  it("recovers a running record whose wake intent the upgrade orphaned", async () => {
+    const stub = freshWorkspace("upgraded-mid-install");
+    const limit = INSTALL_PLAN.timeoutMs ?? 20 * 60_000;
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("install", {
+        state: "running",
+        command: "npm ci --no-audit --no-fund",
+        startedAt: Date.now() - limit - 10 * 60_000
+      } satisfies InstallState);
+      // The legacy row, carrying the entry that would have run the install.
+      await state.storage.put("wake", {
+        "install-run": { key: "install-run", notBefore: Date.now() - 60_000 },
+        "install-watch": {
+          key: "install-watch",
+          notBefore: Date.now() - 30_000
+        }
+      });
+      // And the alarm it armed, already due.
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    // The stale alarm fires into a lifecycle with no schedule rows. It must be a
+    // no-op that does not throw: a throwing `alarm()` is retried a bounded number
+    // of times and then abandoned, taking every future schedule with it.
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.alarm()).resolves.toBeUndefined();
+    });
+
+    // The record is not stranded. `arm()` refuses `running`, so recovery is the
+    // staleness bound writing the only accurate thing left to say.
+    const [advisory] = await stub.advisories();
+    expect(advisory?.kind).toBe("deps-broken");
+    expect((await storedInstall(stub))?.state).toBe("failed");
+
+    // And the object schedules again afterwards, rather than being poisoned by
+    // what it found.
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+    const rows = await runInDurableObject(stub, (_instance, state) => [
+      ...state.storage.sql
+        .exec("SELECT callback FROM cf_agents_schedules")
+        .toArray()
+    ]);
+    expect(rows.map((row) => row.callback)).toContain("idleReclaim");
+  });
+
+  /** The orphaned row is left in place rather than drained. Pinned, not assumed. */
+  it("leaves the orphaned row untouched", async () => {
+    const stub = freshWorkspace("upgraded-orphan");
+    const leftover = {
+      "container-idle": { key: "container-idle", notBefore: Date.now() }
+    };
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.put("wake", leftover)
+    );
+
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+
+    expect(
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.get("wake")
+      )
+    ).toEqual(leftover);
+  });
+});

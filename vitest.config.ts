@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import path from "node:path";
 // The realm-neutral slice, deliberately. This file runs in **Node**, and the
 // `/testing` barrel pulls in `cloudflare:test` and `vitest`, which fails at load
