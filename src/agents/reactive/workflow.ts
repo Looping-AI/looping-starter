@@ -3,7 +3,8 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@dynamicagents/core";
 import {
   runHandleTask,
-  type HandleTaskParams
+  type HandleTaskParams,
+  type TaskVerdict
 } from "@dynamicagents/core/round";
 import { REACTIVE_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
@@ -29,8 +30,8 @@ export class HandleTaskWorkflow extends WorkflowEntrypoint<
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
-  ): Promise<void> {
-    await runHandleTask(event.payload, step, {
+  ): Promise<TaskVerdict> {
+    return await runHandleTask(event.payload, step, {
       resolveAgent: (identity) => reactive.resolveAgent(this.env, identity),
       config: resolveConfig(REACTIVE_CONFIG),
       policy: roundPolicy,

@@ -254,6 +254,151 @@ describe("against the real Durable Object", () => {
 });
 
 /**
+ * What the instance record says once the run is over.
+ *
+ * Every terminal shape this agent has must be distinguishable in the value
+ * `run()` returns, because that value is the Workflow instance's `output` and
+ * nothing else records the outcome: a delivered failure and a delivered reply
+ * are otherwise the same `complete` instance with the same `ok` steps.
+ *
+ * That includes the shape core's round loop has no equivalent of — a turn that
+ * completed with nothing to say — which is why this agent carries its own
+ * verdict type rather than core's.
+ */
+describe("the verdict a finished run returns", () => {
+  /**
+   * An agent whose `generate` step can never succeed, so the run reaches the
+   * abandoned path. `saveTask` decides whether the recovery's guarded write
+   * applies — which is the difference between a delivered failure and a
+   * cancellation that got there first.
+   */
+  const refusingToConverse = (
+    options: { saveTask: boolean },
+    message = "the model refused every attempt"
+  ) => {
+    const { stub } = fakeAgent(options);
+    return {
+      ...stub,
+      async converse() {
+        throw new Error(message);
+      }
+    } as unknown as DurableObjectStub<ProactiveAgent>;
+  };
+
+  const deps = (stub: DurableObjectStub<ProactiveAgent>) => ({
+    resolveAgent: () => stub,
+    signingKey: env.A2A_SIGNING_KEY,
+    abandonedCopy: ABANDONED_COPY
+  });
+
+  it("tells a reply, a silence and a failure apart", async () => {
+    const shapes = [
+      { generate: { kind: "reply", text: "here you go" }, outcome: "replied" },
+      { generate: { kind: "no_reply" }, outcome: "no-reply" },
+      { generate: { kind: "failed", text: "it broke" }, outcome: "failed" }
+    ];
+
+    for (const [i, shape] of shapes.entries()) {
+      const { stub } = fakeAgent({ saveTask: true });
+      const { step } = fakeStep({
+        cached: { generate: shape.generate, notify: undefined }
+      });
+
+      const verdict = await runNotifyTask(
+        params(`verdict-${i}`),
+        step,
+        deps(stub)
+      );
+
+      expect(verdict).toEqual({ outcome: shape.outcome });
+    }
+  });
+
+  it("reports a task canceled before it started", async () => {
+    const { stub } = fakeAgent({ markWorking: "canceled" });
+    const { step } = fakeStep();
+
+    await expect(
+      runNotifyTask(params("verdict-cancel"), step, deps(stub))
+    ).resolves.toEqual({ outcome: "canceled" });
+  });
+
+  /**
+   * The guarded write refused, which is a `tasks/cancel` landing while the model
+   * worked: nothing was persisted and nothing posted. Reporting what the turn
+   * *would* have said would describe an outcome the user never received — the
+   * same class of defect as a failed run recording itself as a clean `complete`.
+   */
+  it("reports the cancellation, not the reply nobody got", async () => {
+    const { stub } = fakeAgent({
+      probeState: TaskState.TASK_STATE_WORKING,
+      saveTask: false
+    });
+    const { step } = fakeStep({
+      cached: { generate: { kind: "reply", text: "here you go" } }
+    });
+
+    await expect(
+      runNotifyTask(params("verdict-race"), step, deps(stub))
+    ).resolves.toEqual({ outcome: "canceled" });
+  });
+
+  it("reports a turn abandoned after its retries ran out", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    const verdict = await runNotifyTask(
+      params("verdict-abandoned"),
+      step,
+      deps(refusingToConverse({ saveTask: true }))
+    );
+
+    expect(verdict).toMatchObject({ outcome: "abandoned" });
+  });
+
+  /**
+   * The recovery path has the same cancellation check as the ordinary one, and
+   * the same consequence when it fires: the guarded write refused, so no failed
+   * Task was persisted and none was posted. Nothing was abandoned to anyone,
+   * because the caller had already stopped listening.
+   */
+  it("reports a cancellation that won the abandoned write", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    await expect(
+      runNotifyTask(
+        params("verdict-abandoned-race"),
+        step,
+        deps(refusingToConverse({ saveTask: false }))
+      )
+    ).resolves.toEqual({ outcome: "canceled" });
+  });
+
+  /**
+   * `cause` is whatever was thrown and the instance `output` has a 1 MiB
+   * ceiling, so an unbounded diagnostic would fail the run while serializing its
+   * record of having recovered — the one path written to avoid a silent failure,
+   * made into one.
+   */
+  it("caps a fault whose message is a whole response body", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { step } = fakeStep({ cached: { "abandoned:notify": undefined } });
+
+    const verdict = await runNotifyTask(
+      params("verdict-huge"),
+      step,
+      deps(refusingToConverse({ saveTask: true }, "x".repeat(500_000)))
+    );
+
+    expect(verdict.outcome).toBe("abandoned");
+    const { error } = verdict as { error: string };
+    expect(error.length).toBeLessThan(3_000);
+    expect(error).toMatch(/truncated/);
+  });
+});
+
+/**
  * A `generate` step that exhausts its retries must still reach the user.
  *
  * `generate` is a durable step: it retries a bounded number of times and then

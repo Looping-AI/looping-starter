@@ -64,6 +64,11 @@ export const REACTIVE_CONFIG: CoreConfigOverrides = {
   mainAgentLimits: { maxTurns: 20, maxWallMs: 60 * 60_000 },
   subagentLimits: { maxTurns: 20, maxWallMs: 30 * 60_000 },
   toolOutputWindow: 4,
+  // Core's own default, stated rather than inherited because every other knob
+  // here is. Two rounds of work-tool exchanges is what stops a round re-making
+  // the mistake the round before it just made, and it is the smallest window
+  // that can.
+  roundObservationWindow: 2,
   maxSubtasks: 8,
   session: {
     memoryMaxTokens: 1200,
@@ -121,13 +126,18 @@ const CODER_MODEL = {
  * subagents editing one checkout is a merge conflict, not fan-out.
  *
  * `toolOutputWindow` is wider than reactive's because a build log the model can
- * no longer see is a build log it will run again.
+ * no longer see is a build log it will run again. `roundObservationWindow` is
+ * wider for the same reason one round further out: a coding task is a long
+ * sequence of rounds against one checkout, so what the round before last found —
+ * a failing test, a refused clone, a missing manifest — is still true, and
+ * rediscovering it costs a container round trip rather than a token.
  */
 export const CODER_CONFIG: CoreConfigOverrides = {
   model: CODER_MODEL,
   mainAgentLimits: { maxTurns: 60, maxWallMs: 3 * 60 * 60_000 },
   subagentLimits: { maxTurns: 80, maxWallMs: 90 * 60_000 },
   toolOutputWindow: 6,
+  roundObservationWindow: 3,
   maxSubtasks: 4,
   session: {
     memoryMaxTokens: 2_000,
