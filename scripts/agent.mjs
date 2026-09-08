@@ -263,18 +263,29 @@ export class ${pascal}Subagent extends RecipeSubagentHost<Env> {
 const ROUND_WORKFLOW_TS = `import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { resolveConfig } from "@dynamicagents/core";
-import { runHandleTask, type HandleTaskParams } from "@dynamicagents/core/round";
+import {
+  runHandleTask,
+  type HandleTaskParams,
+  type TaskVerdict
+} from "@dynamicagents/core/round";
 import { ${screaming}_CONFIG } from "@/config";
 import { roundPolicy } from "@/round-policy";
 import { ${camel} } from "./definition";
 
-/** The ${tenant} agent's task workflow: core's orchestration, its own binding. */
+/**
+ * The ${tenant} agent's task workflow: core's orchestration, its own binding.
+ *
+ * The verdict is returned rather than awaited and dropped: the platform records
+ * what \`run()\` returns as the Workflow instance's \`output\`, and that is the only
+ * thing telling a failed task from a successful one on a record where both are
+ * \`complete\` with every step \`ok\`.
+ */
 export class ${pascal}Workflow extends WorkflowEntrypoint<Env, HandleTaskParams> {
   async run(
     event: Readonly<WorkflowEvent<HandleTaskParams>>,
     step: WorkflowStep
-  ): Promise<void> {
-    await runHandleTask(event.payload, step, {
+  ): Promise<TaskVerdict> {
+    return await runHandleTask(event.payload, step, {
       resolveAgent: (identity) => ${camel}.resolveAgent(this.env, identity),
       config: resolveConfig(${screaming}_CONFIG),
       policy: roundPolicy,

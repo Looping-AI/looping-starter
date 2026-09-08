@@ -66,17 +66,34 @@ export interface NotifyTaskParams {
 /**
  * How a finished run ended, for the instance record.
  *
+ * The platform records what `run()` returns as the Workflow instance's `output`,
+ * and that is the only place the outcome is recorded: a turn that failed still
+ * finishes its instance cleanly, because a failure here is a Task this delivers
+ * rather than a throw. Without a return value, a delivered failure and a
+ * delivered reply are the same `complete` instance with the same `ok` steps.
+ *
  * Core's `TaskVerdict` is the same idea and deliberately not reused: this agent
  * has a terminal shape core's round loop cannot produce — a turn that completed
  * with nothing to say — and widening core's union to hold an outcome only a
- * non-delegating starter agent can reach would be the starter's shape leaking
+ * non-delegating agent here can reach would be this repository's shape leaking
  * into a published package.
- *
- * Why it exists at all is core's reason exactly. This workflow returned `void` on
- * every path, so a failed notification and a delivered one both recorded
- * `status: complete  success: true  error: null` and any monitoring built on that
- * saw nothing.
  */
+/**
+ * The most of an arbitrary fault's text a {@link NotifyVerdict} will carry.
+ *
+ * The verdict is the Workflow instance's `output` and that has a 1 MiB ceiling,
+ * while `cause` is whatever was thrown — a provider or tool can raise an error
+ * whose message is a whole response body. Unbounded, this would fail a run while
+ * serializing its record of having recovered, which turns the one path written
+ * to avoid a silent failure into one.
+ *
+ * Core bounds its own `TaskVerdict` the same way and owns the reasoning. The
+ * number is restated rather than imported because core does not export it, and
+ * the two need not agree: each bounds its own output, and being wrong here costs
+ * a shorter diagnostic, never a broken bound.
+ */
+const MAX_VERDICT_ERROR_CHARS = 2_000;
+
 export type NotifyVerdict =
   | { outcome: "replied" }
   /** The turn ran and chose to say nothing. Completed, with no message posted. */
@@ -170,8 +187,15 @@ export async function runNotifyTask(
     //
     // A `false` disposition is the guarded write refusing: the caller canceled
     // while the retries burned, so nothing was abandoned to anyone.
+    const error = String(cause);
     return delivered
-      ? { outcome: "abandoned", error: String(cause) }
+      ? {
+          outcome: "abandoned",
+          error:
+            error.length <= MAX_VERDICT_ERROR_CHARS
+              ? error
+              : `${error.slice(0, MAX_VERDICT_ERROR_CHARS)}… [truncated]`
+        }
       : { outcome: "canceled" };
   }
 }
