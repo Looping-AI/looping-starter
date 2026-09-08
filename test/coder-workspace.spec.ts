@@ -773,3 +773,91 @@ describe("the idle deadlines, over a scheduler that has no upsert", () => {
     expect(again).toContain("containerIdle");
   });
 });
+
+/**
+ * Booting on what the predecessor left behind, since there is no migration.
+ *
+ * The old alarm kept every deadline in one KV row called `"wake"` and armed the
+ * physical alarm itself. An object upgraded mid-install has all of it on disk:
+ * a `running` install record, an `install-run` intent in that row pointing at
+ * it, and an alarm that will fire once into a handler with no schedule rows
+ * behind it.
+ *
+ * The intent is orphaned — nothing reads that row any more — so the question is
+ * not whether the wake-up is lost (it is) but whether the object recovers. It
+ * does, through the staleness bound, which is the mechanism that already exists
+ * for "the isolate that owned this is gone". An orphaned intent is exactly that
+ * case, so the upgrade needs no drain of its own.
+ */
+describe("an object upgraded mid-install", () => {
+  it("recovers a running record whose wake intent the upgrade orphaned", async () => {
+    const stub = freshWorkspace("upgraded-mid-install");
+    const limit = INSTALL_PLAN.timeoutMs ?? 20 * 60_000;
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("install", {
+        state: "running",
+        command: "npm ci --no-audit --no-fund",
+        startedAt: Date.now() - limit - 10 * 60_000
+      } satisfies InstallState);
+      // The predecessor's row, with the intent that used to run the install.
+      await state.storage.put("wake", {
+        "install-run": { key: "install-run", notBefore: Date.now() - 60_000 },
+        "install-watch": {
+          key: "install-watch",
+          notBefore: Date.now() - 30_000
+        }
+      });
+      // And the alarm it armed, already due.
+      await state.storage.setAlarm(Date.now() - 1_000);
+    });
+
+    // The stale alarm fires into a lifecycle with no schedule rows. It must be a
+    // no-op that does not throw: a throwing `alarm()` is retried a bounded number
+    // of times and then abandoned, taking every future schedule with it.
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.alarm()).resolves.toBeUndefined();
+    });
+
+    // The record is not stranded. `arm()` refuses `running`, so recovery is the
+    // staleness bound writing the only accurate thing left to say.
+    const [advisory] = await stub.advisories();
+    expect(advisory?.kind).toBe("deps-broken");
+    expect((await storedInstall(stub))?.state).toBe("failed");
+
+    // And the object schedules again afterwards, rather than being poisoned by
+    // what it found.
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+    const rows = await runInDurableObject(stub, (_instance, state) => [
+      ...state.storage.sql
+        .exec("SELECT callback FROM cf_agents_schedules")
+        .toArray()
+    ]);
+    expect(rows.map((row) => row.callback)).toContain("idleReclaim");
+  });
+
+  /** The orphaned row is left in place rather than drained. Pinned, not assumed. */
+  it("leaves the orphaned row untouched", async () => {
+    const stub = freshWorkspace("upgraded-orphan");
+    const leftover = {
+      "container-idle": { key: "container-idle", notBefore: Date.now() }
+    };
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.put("wake", leftover)
+    );
+
+    using ws = await getWorkspace(
+      stub as unknown as Parameters<typeof getWorkspace>[0]
+    );
+    void ws;
+
+    expect(
+      await runInDurableObject(stub, (_instance, state) =>
+        state.storage.get("wake")
+      )
+    ).toEqual(leftover);
+  });
+});
