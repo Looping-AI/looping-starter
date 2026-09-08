@@ -734,11 +734,14 @@ describe("the idle deadlines, over a scheduler that has no upsert", () => {
    * two interleaved they could cancel the same row, create two replacements and
    * keep one id — leaving a schedule nothing can reach.
    *
-   * They do not interleave, and this is the evidence rather than the argument.
-   * A Durable Object closes its input gate while a storage operation is in
-   * flight, so a second RPC is not delivered part-way through the first one\'s
-   * move. Worth pinning because the guarantee is the platform\'s rather than
-   * this code\'s: nothing here would fail loudly if it stopped holding.
+   * They do interleave: the input gate closes while a storage operation is in
+   * flight, not for the stretch between two of them. So `namedDeadline`
+   * serializes moves per key, and this is the end-to-end half of proving it —
+   * the deterministic unit lives in core, and this shows the object really gets
+   * it, through a real Durable Object under concurrent RPCs.
+   *
+   * Worth having both, because this one passes on timing alone when the
+   * serialization is missing. It only failed in a full-suite run.
    */
   it("keeps one row per deadline under concurrent touches", async () => {
     const stub = freshWorkspace("touch-concurrent");
