@@ -1,7 +1,7 @@
 name: Test
 
-# `next` builds against core and plugins at their own `next`; `main` pins the
-# published versions. Both need the suite, or a PR into `next` merges unchecked.
+# Both lines need the suite, or a PR into `next` merges unchecked. What each
+# branch installs is AGENTS.md's to say, not this file's.
 on:
   push:
     branches:
@@ -25,9 +25,10 @@ jobs:
         with:
           node-version: 24
 
-      # Always from the registry, never from a sibling checkout. `npm run
-      # link:local` is a development convenience, and a build that only works
-      # with it must never be able to ship.
+      # From the committed lockfile, never from a sibling checkout — whether
+      # that lockfile resolves to the registry or to a git ref is the branch's
+      # business. `npm run link:local` is a development convenience, and a build
+      # that only works with it must never be able to ship.
       - run: npm ci
 
       - run: npm run check
