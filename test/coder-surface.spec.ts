@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import {
   createAgentRuntime,
   MAX_TOOL_CALL_MS,
+  TOOL_CALL_GRACE_MS,
   validateRecipe
 } from "@dynamicagents/core";
 import type { PluginHost } from "@dynamicagents/core/host";
@@ -212,13 +213,13 @@ describe("the container config", () => {
     expect(config.shell).toBe("bash");
     expect(config.cwd).toBe("/workspace");
     expect(config.workspaceName()).toBe("caller|owner/repo");
-    // Why the pair must stay under MAX_TOOL_CALL_MS: see COMMAND_TIMEOUT_MS in
+    // Why the pair must stay under the call's signal: see COMMAND_TIMEOUT_MS in
     // src/workspace/container.ts.
     expect(config.installGateMs).toBeGreaterThan(0);
     expect(config.timeoutMs).toBeGreaterThan(0);
     expect(
       (config.installGateMs ?? Infinity) + (config.timeoutMs ?? Infinity)
-    ).toBeLessThan(MAX_TOOL_CALL_MS);
+    ).toBeLessThan(MAX_TOOL_CALL_MS - TOOL_CALL_GRACE_MS);
   });
 
   it("is the same shape whichever name it is given", () => {

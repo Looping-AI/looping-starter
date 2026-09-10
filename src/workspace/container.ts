@@ -1,4 +1,4 @@
-import { MAX_TOOL_CALL_MS } from "@dynamicagents/core";
+import { MAX_TOOL_CALL_MS, TOOL_CALL_GRACE_MS } from "@dynamicagents/core";
 import type { ComputerConfig } from "@dynamicagents/plugins/computer";
 import type { WorkspaceObjectBase } from "./object";
 import { WORKSPACE_DIR } from "./object";
@@ -11,18 +11,20 @@ const INSTALL_GATE_MS = 180_000;
 
 /**
  * What one container command may run for — derived, because the install gate and
- * the command share a single tool call, and core fails that call at
- * `MAX_TOOL_CALL_MS` from its start. Core's `MAX_TOOL_CALL_MS` explains what that
- * ceiling protects.
+ * the command share a single tool call, and core aborts that call's signal
+ * `TOOL_CALL_GRACE_MS` short of `MAX_TOOL_CALL_MS` from its start. Core's
+ * `MAX_TOOL_CALL_MS` explains what that ceiling protects, and `TOOL_CALL_GRACE_MS`
+ * why the signal comes first.
  *
- * Staying under it is what keeps the container's own kill the one that lands, and
- * the difference is what the model gets back: the container's kill returns every
- * line the command wrote, while core's abandons the call and returns only that it
- * stopped. The margin covers the Worker-side work around the command — opening the
- * workspace, the gate's last read, starting the process — so the two cannot race
- * at the boundary. It is sized generously rather than measured.
+ * Staying under the signal is what keeps the container's own kill the one that
+ * lands, and the difference is what the model gets back: the container's kill
+ * returns every line the command wrote, while `sb_exec` stopping at the signal
+ * returns only that it stopped. The margin covers the Worker-side work around the
+ * command — opening the workspace, the gate's last read, starting the process — so
+ * the two cannot race at the boundary. It is sized generously rather than measured.
  */
-const COMMAND_TIMEOUT_MS = MAX_TOOL_CALL_MS - INSTALL_GATE_MS - 15_000;
+const COMMAND_TIMEOUT_MS =
+  MAX_TOOL_CALL_MS - TOOL_CALL_GRACE_MS - INSTALL_GATE_MS - 15_000;
 
 /**
  * The container settings every path into a workspace shares.
@@ -83,8 +85,8 @@ export function workspaceContainer(
     /**
      * Stated rather than defaulted, because it is one side of an invariant held
      * with core's tool deadline and the computer plugin's install gate. See
-     * {@link COMMAND_TIMEOUT_MS} for why it sits below `MAX_TOOL_CALL_MS` rather
-     * than at it.
+     * {@link COMMAND_TIMEOUT_MS} for why it sits below the call's signal rather
+     * than at `MAX_TOOL_CALL_MS`.
      *
      * Note the other end of the same command: `CONTAINER_IDLE_MS` in `./object.ts`
      * must stay above this, or the idle sweeper destroys the container out from
