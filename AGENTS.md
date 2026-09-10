@@ -115,8 +115,12 @@ they install, and the difference is what a fork gets:
   that is not released.
 - **`next` is where this repo is developed against changes core and plugins have
   accepted but not yet shipped**, so a contract change can be exercised end-to-end
-  before any of it is published. It reaches them by git ref onto their own `next`
-  — pending, until those branches carry a `prepare` that builds.
+  before any of it is published. It reaches them by git ref onto their own `next`,
+  which installs only because those branches carry a `prepare` that builds and
+  because `allowScripts` here lets npm run it — drop either and every subpath
+  resolves to a missing file. npm pins the ref to a SHA in the lockfile, so a merge
+  into core or plugins does not reach this repo until someone reinstalls; a plain
+  reinstall of the lockfile keeps the old commit.
 
 Flipping the git refs back to semver is part of the release, not part of the merge —
 the same act that bumps core and plugins. Use `npm run link:local` for work that is
