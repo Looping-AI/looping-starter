@@ -105,6 +105,23 @@ repo is always briefly behind. `PLUGIN_CONTRACT_VERSION` is asserted at DO start
 a skew fails with a sentence naming the plugin rather than a structural-type error
 several frames away.
 
+### The branches, and what each installs
+
+This repo is not versioned and has no release, but its branches still differ in what
+they install, and the difference is what a fork gets:
+
+- **`main` pins published versions.** Somebody who forks this repo builds against the
+  registry, which is the whole point of a starter. Nothing here may depend on a commit
+  that is not released.
+- **`next` is where this repo is developed against changes core and plugins have
+  accepted but not yet shipped**, so a contract change can be exercised end-to-end
+  before any of it is published. It reaches them by git ref onto their own `next`
+  — pending, until those branches carry a `prepare` that builds.
+
+Flipping the git refs back to semver is part of the release, not part of the merge —
+the same act that bumps core and plugins. Use `npm run link:local` for work that is
+not committed anywhere yet; a git ref only reaches what is on a branch.
+
 ---
 
 ## Comments
