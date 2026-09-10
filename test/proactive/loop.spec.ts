@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tool } from "ai";
+import { APICallError, tool } from "ai";
 import { z } from "zod";
 import { FakeSession, mockModel } from "@dynamicagents/core/testing";
 import { sessionMessage, type ModelPair } from "@dynamicagents/core/agent";
@@ -31,6 +31,36 @@ function pair(primary: ReturnType<typeof mockModel>, fallback = primary) {
     primaryId: () => MODELS.primary,
     fallbackId: () => MODELS.fallback
   } as unknown as ModelPair;
+}
+
+/**
+ * A pair whose every slot fails the same way, before a model is reached.
+ *
+ * The failure is what the loop classifies, so how it is *shaped* is the whole
+ * point: core reads structure — an `APICallError` and its status — and never the
+ * sentence. That is what `workers-ai-provider` raises for a binding failure, so
+ * these are the errors this loop actually sees.
+ */
+function failing(error: unknown) {
+  const throwing = () => {
+    throw error;
+  };
+  return {
+    primary: throwing,
+    fallback: throwing,
+    primaryId: () => MODELS.primary,
+    fallbackId: () => MODELS.fallback
+  } as unknown as ModelPair;
+}
+
+/** As Workers AI fails: an internal code mapped onto its documented status. */
+function workersAiFailure(statusCode: number, message: string) {
+  return new APICallError({
+    message,
+    url: `workers-ai:binding/run/${MODELS.primary}`,
+    requestBodyValues: {},
+    statusCode
+  });
 }
 
 /** History with the inbound turn already appended — the DO's job, not the loop's. */
@@ -140,38 +170,40 @@ describe("failure handling", () => {
     // The distinction is load-bearing: A2A v1.0 carries no structured task
     // error, so the terminal state is the only way to tell the gatekeeper the turn
     // broke rather than answered.
-    const exploding = {
-      primary: () => {
-        throw new Error("boom");
-      },
-      fallback: () => {
-        throw new Error("boom");
-      },
-      primaryId: () => MODELS.primary,
-      fallbackId: () => MODELS.fallback
-    } as unknown as ModelPair;
-
     const outcome = await runTurn(
-      args({ models: exploding, unexpectedReply: "sorry, it broke" })
+      args({
+        models: failing(new Error("boom")),
+        unexpectedReply: "sorry, it broke"
+      })
     );
     expect(outcome).toEqual({ kind: "failed", text: "sorry, it broke" });
   });
 
   it("reports a transient capacity blip as a reply telling the user to retry", async () => {
-    const transient = {
-      primary: () => {
-        throw new Error("capacity temporarily exceeded");
-      },
-      fallback: () => {
-        throw new Error("capacity temporarily exceeded");
-      },
-      primaryId: () => MODELS.primary,
-      fallbackId: () => MODELS.fallback
-    } as unknown as ModelPair;
+    const transient = failing(
+      workersAiFailure(
+        429,
+        "3040: Capacity temporarily exceeded, please try again."
+      )
+    );
 
     // Nothing is broken and the work is recoverable, so the turn genuinely
     // completed — by saying "try again".
     const outcome = await runTurn(args({ models: transient }));
     expect(outcome).toEqual({ kind: "reply", text: TRANSIENT_REPLY });
+  });
+
+  it("reports a blocked account as a failure rather than as a blip", async () => {
+    // Its sentence reads like an outage and its status does not. Telling this
+    // caller to try again is telling them to wait out something that will not
+    // clear until an operator clears it.
+    const blocked = failing(
+      workersAiFailure(403, "3023: Service unavailable for account")
+    );
+
+    const outcome = await runTurn(
+      args({ models: blocked, unexpectedReply: "sorry, it broke" })
+    );
+    expect(outcome).toEqual({ kind: "failed", text: "sorry, it broke" });
   });
 });

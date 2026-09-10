@@ -193,10 +193,6 @@ export async function runTurn(args: RunTurnArgs): Promise<TurnOutcome> {
         tools,
         stopWhen,
         prepareStep,
-        // We do our own primary → fallback recovery below, so disable the SDK's
-        // per-model exponential-backoff retries — they'd only add latency on a
-        // hard failure and duplicate our fallback.
-        maxRetries: 0,
         onStepEnd: tracked
           ? buildIntermediateContentHandler(tracked, [NO_REPLY_TOOL_NAME])
           : undefined
