@@ -81,9 +81,10 @@ export function workspaceContainer(
      */
     installGateMs: INSTALL_GATE_MS,
     /**
-     * Stated rather than defaulted, because it is half of an invariant that spans
-     * two packages. See {@link COMMAND_TIMEOUT_MS} for why it sits below
-     * `MAX_TOOL_CALL_MS` rather than at it.
+     * Stated rather than defaulted, because it is one side of an invariant held
+     * with core's tool deadline and the computer plugin's install gate. See
+     * {@link COMMAND_TIMEOUT_MS} for why it sits below `MAX_TOOL_CALL_MS` rather
+     * than at it.
      *
      * Note the other end of the same command: `CONTAINER_IDLE_MS` in `./object.ts`
      * must stay above this, or the idle sweeper destroys the container out from

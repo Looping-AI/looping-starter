@@ -212,9 +212,8 @@ describe("the container config", () => {
     expect(config.shell).toBe("bash");
     expect(config.cwd).toBe("/workspace");
     expect(config.workspaceName()).toBe("caller|owner/repo");
-    // The gate and the command share one tool call, which core fails at
-    // MAX_TOOL_CALL_MS. Under it, the container's kill lands first and the model
-    // keeps the output; at or over it, core's lands first and the output is lost.
+    // Why the pair must stay under MAX_TOOL_CALL_MS: see COMMAND_TIMEOUT_MS in
+    // src/workspace/container.ts.
     expect(config.installGateMs).toBeGreaterThan(0);
     expect(config.timeoutMs).toBeGreaterThan(0);
     expect(
