@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { tool } from "ai";
+import { APICallError, tool } from "ai";
 import { z } from "zod";
-import { FakeSession, mockModel } from "@dynamicagents/core/testing";
+import {
+  countingModel,
+  FakeSession,
+  mockModel,
+  rateLimitedModel,
+  throwingModel
+} from "@dynamicagents/core/testing";
 import { sessionMessage, type ModelPair } from "@dynamicagents/core/agent";
 import { noReplyTool, NO_REPLY_TOOL_NAME } from "@dynamicagents/plugins/triage";
 import {
@@ -31,6 +37,35 @@ function pair(primary: ReturnType<typeof mockModel>, fallback = primary) {
     primaryId: () => MODELS.primary,
     fallbackId: () => MODELS.fallback
   } as unknown as ModelPair;
+}
+
+/**
+ * A pair that fails while being *built*, before there is a model to call.
+ *
+ * Only the catch-all below wants this. A failure of the inference itself has to
+ * come out of the model, or the loop is never asked the question this file is
+ * about — whether it retried in place before spending the fallback.
+ */
+function failing(error: unknown) {
+  const throwing = () => {
+    throw error;
+  };
+  return {
+    primary: throwing,
+    fallback: throwing,
+    primaryId: () => MODELS.primary,
+    fallbackId: () => MODELS.fallback
+  } as unknown as ModelPair;
+}
+
+/** As Workers AI fails: an internal code mapped onto its documented status. */
+function workersAiFailure(statusCode: number, message: string) {
+  return new APICallError({
+    message,
+    url: `workers-ai:binding/run/${MODELS.primary}`,
+    requestBodyValues: {},
+    statusCode
+  });
 }
 
 /** History with the inbound turn already appended — the DO's job, not the loop's. */
@@ -140,38 +175,78 @@ describe("failure handling", () => {
     // The distinction is load-bearing: A2A v1.0 carries no structured task
     // error, so the terminal state is the only way to tell the gatekeeper the turn
     // broke rather than answered.
-    const exploding = {
-      primary: () => {
-        throw new Error("boom");
-      },
-      fallback: () => {
-        throw new Error("boom");
-      },
-      primaryId: () => MODELS.primary,
-      fallbackId: () => MODELS.fallback
-    } as unknown as ModelPair;
-
     const outcome = await runTurn(
-      args({ models: exploding, unexpectedReply: "sorry, it broke" })
+      args({
+        models: failing(new Error("boom")),
+        unexpectedReply: "sorry, it broke"
+      })
     );
     expect(outcome).toEqual({ kind: "failed", text: "sorry, it broke" });
   });
 
-  it("reports a transient capacity blip as a reply telling the user to retry", async () => {
-    const transient = {
-      primary: () => {
-        throw new Error("capacity temporarily exceeded");
-      },
-      fallback: () => {
-        throw new Error("capacity temporarily exceeded");
-      },
-      primaryId: () => MODELS.primary,
-      fallbackId: () => MODELS.fallback
-    } as unknown as ModelPair;
+  it("waits out a capacity blip on the model that hit it", async () => {
+    // The retry is the SDK's own, on its defaults — this loop configures none,
+    // which is the change this file exists to cover. Both outcomes are an
+    // answer, so only the call counts tell a waited retry from a spent fallback.
+    const primary = rateLimitedModel(1, { text: "here is your answer" });
+    const fallback = countingModel({ text: "should never be reached" });
 
-    // Nothing is broken and the work is recoverable, so the turn genuinely
-    // completed — by saying "try again".
-    const outcome = await runTurn(args({ models: transient }));
+    const outcome = await runTurn(
+      args({ models: pair(primary.model, fallback.model) })
+    );
+
+    expect(outcome).toEqual({ kind: "reply", text: "here is your answer" });
+    expect(primary.calls()).toBe(2);
+    expect(fallback.calls()).toBe(0);
+  });
+
+  it("reports a transient capacity blip as a reply telling the user to retry", async () => {
+    // What one looks like by the time this loop catches it: the SDK waited in
+    // place, gave up, and wrapped every attempt in a `RetryError`. Core unwraps
+    // that to the attempt the call ended on, which is still a 429 — nothing is
+    // broken and the work is recoverable, so the turn genuinely completed, by
+    // saying "try again".
+    const primary = rateLimitedModel(Number.POSITIVE_INFINITY, {
+      text: "unreachable"
+    });
+    const fallback = rateLimitedModel(Number.POSITIVE_INFINITY, {
+      text: "unreachable"
+    });
+
+    const outcome = await runTurn(
+      args({ models: pair(primary.model, fallback.model) })
+    );
+
     expect(outcome).toEqual({ kind: "reply", text: TRANSIENT_REPLY });
+    // Each slot waited before it was given up, and the fallback was still
+    // tried. The attempt count itself is pinned in core, where the chunk
+    // headroom is sized against it.
+    expect(primary.calls()).toBeGreaterThan(1);
+    expect(fallback.calls()).toBeGreaterThan(1);
+  });
+
+  it("reports a blocked account as a failure rather than as a blip", async () => {
+    // Its sentence reads like an outage and its status does not. Telling this
+    // caller to try again is telling them to wait out something that will not
+    // clear until an operator clears it.
+    const blocked = () =>
+      throwingModel(
+        workersAiFailure(403, "3023: Service unavailable for account")
+      );
+    const primary = blocked();
+    const fallback = blocked();
+
+    const outcome = await runTurn(
+      args({
+        models: pair(primary.model, fallback.model),
+        unexpectedReply: "sorry, it broke"
+      })
+    );
+
+    expect(outcome).toEqual({ kind: "failed", text: "sorry, it broke" });
+    // Once each: a status the provider marked non-retryable is not waited on,
+    // by the SDK or by anything here.
+    expect(primary.calls()).toBe(1);
+    expect(fallback.calls()).toBe(1);
   });
 });
