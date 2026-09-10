@@ -1,12 +1,16 @@
 name: Test
 
+# `next` builds against core and plugins at their own `next`; `main` pins the
+# published versions. Both need the suite, or a PR into `next` merges unchecked.
 on:
   push:
     branches:
       - main
+      - next
   pull_request:
     branches:
       - main
+      - next
 
 jobs:
   test:

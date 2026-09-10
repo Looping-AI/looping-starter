@@ -60,6 +60,8 @@
     "node": ">=24"
   },
   "allowScripts": {
+    "@dynamicagents/core": true,
+    "@dynamicagents/plugins": true,
     "esbuild": false,
     "fsevents": false,
     "sharp": false,
