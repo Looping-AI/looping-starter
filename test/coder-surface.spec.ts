@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { env } from "cloudflare:workers";
-import { createAgentRuntime, validateRecipe } from "@dynamicagents/core";
+import {
+  createAgentRuntime,
+  MAX_TOOL_CALL_MS,
+  validateRecipe
+} from "@dynamicagents/core";
 import type { PluginHost } from "@dynamicagents/core/host";
 import {
   SANDBOX_FAMILY,
@@ -208,10 +212,14 @@ describe("the container config", () => {
     expect(config.shell).toBe("bash");
     expect(config.cwd).toBe("/workspace");
     expect(config.workspaceName()).toBe("caller|owner/repo");
-    // Bounded at or below core's MAX_TOOL_CALL_MS, which core cannot enforce
-    // because core installs no tools.
-    expect(config.timeoutMs).toBe(10 * 60_000);
+    // The gate and the command share one tool call, which core fails at
+    // MAX_TOOL_CALL_MS. Under it, the container's kill lands first and the model
+    // keeps the output; at or over it, core's lands first and the output is lost.
     expect(config.installGateMs).toBeGreaterThan(0);
+    expect(config.timeoutMs).toBeGreaterThan(0);
+    expect(
+      (config.installGateMs ?? Infinity) + (config.timeoutMs ?? Infinity)
+    ).toBeLessThan(MAX_TOOL_CALL_MS);
   });
 
   it("is the same shape whichever name it is given", () => {
