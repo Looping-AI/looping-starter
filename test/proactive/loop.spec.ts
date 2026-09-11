@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { APICallError, tool } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { z } from "zod";
 import {
   countingModel,
@@ -43,8 +44,8 @@ function pair(primary: ReturnType<typeof mockModel>, fallback = primary) {
  * A pair that fails while being *built*, before there is a model to call.
  *
  * Only the catch-all below wants this. A failure of the inference itself has to
- * come out of the model, or the loop is never asked the question this file is
- * about — whether it retried in place before spending the fallback.
+ * come out of the model, or the pair never sees it — and which slot ended up
+ * answering is the question the failure specs ask.
  */
 function failing(error: unknown) {
   const throwing = () => {
@@ -184,28 +185,71 @@ describe("failure handling", () => {
     expect(outcome).toEqual({ kind: "failed", text: "sorry, it broke" });
   });
 
-  it("waits out a capacity blip on the model that hit it", async () => {
-    // The retry is the SDK's own, on its defaults — this loop configures none,
-    // which is the change this file exists to cover. Both outcomes are an
-    // answer, so only the call counts tell a waited retry from a spent fallback.
-    const primary = rateLimitedModel(1, { text: "here is your answer" });
-    const fallback = countingModel({ text: "should never be reached" });
+  it("hands a capacity blip to the other model", async () => {
+    // The two slots are different models, and the second may have capacity the
+    // first does not. Both outcomes are an answer, so only the call counts tell
+    // which model gave it.
+    const primary = rateLimitedModel(1, { text: "never reached" });
+    const fallback = countingModel({ text: "here is your answer" });
 
     const outcome = await runTurn(
       args({ models: pair(primary.model, fallback.model) })
     );
 
     expect(outcome).toEqual({ kind: "reply", text: "here is your answer" });
-    expect(primary.calls()).toBe(2);
-    expect(fallback.calls()).toBe(0);
+    expect(primary.calls()).toBe(1);
+    expect(fallback.calls()).toBe(1);
+  });
+
+  it("keeps a fallback that takes over after the agent spoke from going silent", async () => {
+    // The primary speaks, then cannot make its next call. The fallback takes
+    // the turn from there — and names `no_reply`, which would discard a turn the
+    // user has already seen. What was said stays said, and is not said twice.
+    const spoke = mockModel({
+      text: "let me check",
+      toolCall: { toolName: "noop", input: {} }
+    });
+    let calls = 0;
+    const primary = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        calls += 1;
+        if (calls > 1) throw workersAiFailure(400, "5007: bad input");
+        return spoke.doGenerate(options);
+      }
+    });
+    const fallback = mockModel(
+      { toolCall: { toolName: NO_REPLY_TOOL_NAME, input: {} } },
+      { text: "here is what I found" }
+    );
+    const streamed: string[] = [];
+
+    const outcome = await runTurn(
+      args({
+        models: pair(primary, fallback),
+        tools: {
+          [NO_REPLY_TOOL_NAME]: noReplyTool,
+          noop: tool({
+            description: "does nothing",
+            inputSchema: z.object({}),
+            execute: async () => "ok"
+          })
+        },
+        onContent: (text) => {
+          streamed.push(text);
+        }
+      })
+    );
+
+    expect(outcome).toEqual({ kind: "reply", text: "here is what I found" });
+    expect(streamed).toEqual(["let me check"]);
   });
 
   it("reports a transient capacity blip as a reply telling the user to retry", async () => {
-    // What one looks like by the time this loop catches it: the SDK waited in
-    // place, gave up, and wrapped every attempt in a `RetryError`. Core unwraps
-    // that to the attempt the call ended on, which is still a 429 — nothing is
-    // broken and the work is recoverable, so the turn genuinely completed, by
-    // saying "try again".
+    // What one looks like by the time this loop catches it: both slots refused
+    // every attempt the SDK made, and it wrapped them in a `RetryError`. Core
+    // unwraps that to the attempt the call ended on, which is still a 429 —
+    // nothing is broken and the work is recoverable, so the turn genuinely
+    // completed, by saying "try again".
     const primary = rateLimitedModel(Number.POSITIVE_INFINITY, {
       text: "unreachable"
     });
@@ -218,9 +262,8 @@ describe("failure handling", () => {
     );
 
     expect(outcome).toEqual({ kind: "reply", text: TRANSIENT_REPLY });
-    // Each slot waited before it was given up, and the fallback was still
-    // tried. The attempt count itself is pinned in core, where the chunk
-    // headroom is sized against it.
+    // Every attempt asked both slots. The attempt count itself is pinned in
+    // core, where the chunk headroom is sized against it.
     expect(primary.calls()).toBeGreaterThan(1);
     expect(fallback.calls()).toBeGreaterThan(1);
   });
